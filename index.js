@@ -1,4 +1,5 @@
 require('dotenv').config();
+const http = require('http');
 const { Client, GatewayIntentBits, PermissionFlagsBits, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType } = require('discord.js');
 
 // ==================== CONFIGURATION ====================
@@ -1518,6 +1519,26 @@ async function start() {
       console.error('❌ Error: CLIENT_ID not found in .env file');
       process.exit(1);
     }
+
+    // ==================== HTTP SERVER FOR RENDER ====================
+    const PORT = process.env.PORT || 3000;
+    const server = http.createServer((req, res) => {
+      if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'online',
+          bot: 'ModBot',
+          timestamp: new Date().toISOString()
+        }));
+      } else {
+        res.writeHead(404);
+        res.end('Not Found');
+      }
+    });
+
+    server.listen(PORT, () => {
+      console.log(`🌐 HTTP Server running on port ${PORT}`);
+    });
 
     console.log('🚀 Starting bot...');
     await client.login(TOKEN);
