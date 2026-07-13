@@ -349,7 +349,7 @@ async function registerCommands() {
             { name: 'clear (empty the list, disables filter)', value: 'clear' },
           ],
         },
-        { name: 'word', description: 'Word to add/remove', type: 3, required: false },
+        { name: 'word', description: 'Word(s) to add/remove — separate multiple with commas, e.g. "word1, word2, word3"', type: 3, required: false },
       ],
     },
     {
@@ -447,7 +447,7 @@ const HELP_CATEGORIES = {
   security: {
     label: '🔐 Security',
     emoji: '🔐',
-    commands: ['`/antiping on|off`', '`/filter add|remove|list|reset|clear [word]` — `reset` loads a basic English/Hindi/Hinglish profanity list', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
+    commands: ['`/antiping on|off`', '`/filter add|remove|list|reset|clear [word]` — add/remove accept comma-separated lists; `reset` loads a basic English/Hindi/Hinglish profanity list', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
   },
   logging: {
     label: '📋 Logging',
@@ -1134,6 +1134,34 @@ async function handleAntiPing(interaction) {
   await interaction.reply({ embeds: [successEmbed(`Anti-Ping ${action === 'on' ? 'Enabled' : 'Disabled'}`, action === 'on' ? '🛡️ Mass pings and mentions will now be automatically removed.' : 'Anti-ping protection is now off.')] });
 }
 
+/** Splits a "word1, word2, word3" input into a clean, deduped, lowercased list. Commas are the
+ * separator (not spaces) so multi-word phrases like "saala kutta" survive intact. */
+function parseWordList(input) {
+  return Array.from(new Set(
+    input.split(',').map(w => w.toLowerCase().trim()).filter(Boolean),
+  ));
+}
+
+/** Chunks a list of words into `\`w1\`, \`w2\`, ...` lines capped at ~950 chars each,
+ * so a big batch summary never exceeds Discord's 1024-char field value limit. */
+function formatWordChunks(words) {
+  const chunks = [];
+  let current = [];
+  let currentLen = 0;
+  for (const w of words) {
+    const piece = `\`${w}\``;
+    if (currentLen + piece.length + 2 > 950 && current.length) {
+      chunks.push(current.join(', '));
+      current = [];
+      currentLen = 0;
+    }
+    current.push(piece);
+    currentLen += piece.length + 2;
+  }
+  if (current.length) chunks.push(current.join(', '));
+  return chunks;
+}
+
 async function handleFilter(interaction) {
   const action = interaction.options.getString('action');
   const word = interaction.options.getString('word');
@@ -1145,22 +1173,56 @@ async function handleFilter(interaction) {
   if (!chatFilters[guildId]) chatFilters[guildId] = [];
 
   if (action === 'add') {
-    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter add [word or phrase]`')], ephemeral: true });
-    const wordLower = word.toLowerCase().trim();
-    if (chatFilters[guildId].includes(wordLower)) {
-      return interaction.reply({ embeds: [warningEmbed('Already Blocked', `"${word}" is already filtered.`)], ephemeral: true });
+    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter add [word or phrase]` — separate multiple with commas, e.g. `word1, word2, word3`')], ephemeral: true });
+    const requested = parseWordList(word);
+    const added = [];
+    const alreadyBlocked = [];
+    for (const w of requested) {
+      if (chatFilters[guildId].includes(w)) {
+        alreadyBlocked.push(w);
+      } else {
+        chatFilters[guildId].push(w);
+        added.push(w);
+      }
     }
-    chatFilters[guildId].push(wordLower);
-    return interaction.reply({ embeds: [successEmbed('Added to Filter', `🚫 **"${word}"** is now blocked.\n**Total blocked:** ${chatFilters[guildId].length}`)] });
+
+    if (added.length === 0) {
+      return interaction.reply({ embeds: [warningEmbed('Already Blocked', requested.length === 1 ? `"${requested[0]}" is already filtered.` : `All ${requested.length} word(s) were already filtered.`)], ephemeral: true });
+    }
+
+    const embed = successEmbed('Added to Filter', `🚫 Blocked **${added.length}** new word(s).\n**Total blocked:** ${chatFilters[guildId].length}`);
+    formatWordChunks(added).forEach((chunk, i) => embed.addFields({ name: i === 0 ? 'Added' : '\u200b', value: chunk, inline: false }));
+    if (alreadyBlocked.length > 0) {
+      embed.addFields({ name: `Skipped (already blocked) — ${alreadyBlocked.length}`, value: formatWordChunks(alreadyBlocked)[0] || 'None', inline: false });
+    }
+    return interaction.reply({ embeds: [embed] });
   }
 
   if (action === 'remove') {
-    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter remove [word or phrase]`')], ephemeral: true });
-    const wordLower = word.toLowerCase().trim();
-    const index = chatFilters[guildId].indexOf(wordLower);
-    if (index === -1) return interaction.reply({ embeds: [errorEmbed('Not Found', `"${word}" isn't in the filter.`)], ephemeral: true });
-    chatFilters[guildId].splice(index, 1);
-    return interaction.reply({ embeds: [successEmbed('Removed from Filter', `**"${word}"** removed.\n**Total blocked:** ${chatFilters[guildId].length}`)] });
+    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter remove [word or phrase]` — separate multiple with commas, e.g. `word1, word2, word3`')], ephemeral: true });
+    const requested = parseWordList(word);
+    const removed = [];
+    const notFound = [];
+    for (const w of requested) {
+      const index = chatFilters[guildId].indexOf(w);
+      if (index === -1) {
+        notFound.push(w);
+      } else {
+        chatFilters[guildId].splice(index, 1);
+        removed.push(w);
+      }
+    }
+
+    if (removed.length === 0) {
+      return interaction.reply({ embeds: [errorEmbed('Not Found', requested.length === 1 ? `"${requested[0]}" isn't in the filter.` : `None of those ${requested.length} word(s) were in the filter.`)], ephemeral: true });
+    }
+
+    const embed = successEmbed('Removed from Filter', `**${removed.length}** word(s) removed.\n**Total blocked:** ${chatFilters[guildId].length}`);
+    formatWordChunks(removed).forEach((chunk, i) => embed.addFields({ name: i === 0 ? 'Removed' : '\u200b', value: chunk, inline: false }));
+    if (notFound.length > 0) {
+      embed.addFields({ name: `Skipped (not found) — ${notFound.length}`, value: formatWordChunks(notFound)[0] || 'None', inline: false });
+    }
+    return interaction.reply({ embeds: [embed] });
   }
 
   if (action === 'list') {
