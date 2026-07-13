@@ -72,6 +72,24 @@ const snipedMessages = {};  // guildId -> channelId -> { content, authorTag, aut
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
 
+// ==================== DEFAULT CHAT FILTER WORDLIST ====================
+// A basic starter set of common profanity — English, Hindi (Devanagari), and
+// Hinglish (romanized Hindi) — so a server has a working filter out of the
+// box via `/filter reset` instead of starting from an empty list. This is
+// intentionally a mild/common-profanity baseline, not an exhaustive slur
+// list; admins should layer on `/filter add` for anything server-specific.
+const DEFAULT_FILTER_WORDS = [
+  // English
+  'fuck', 'fucker', 'fucking', 'shit', 'bullshit', 'bitch', 'asshole', 'bastard',
+  'dick', 'piss', 'cunt', 'whore', 'slut', 'douchebag', 'motherfucker',
+  // Hindi (Devanagari script)
+  'चूतिया', 'भोसड़ी', 'मादरचोद', 'बहनचोद', 'रंडी', 'गांडू', 'लौड़ा', 'साला', 'कमीना', 'हरामी',
+  // Hinglish (romanized Hindi)
+  'chutiya', 'chutiye', 'bhosdi', 'bhosdike', 'bhosadi', 'madarchod', 'mc', 'bc',
+  'bhenchod', 'behenchod', 'randi', 'gandu', 'gaandu', 'lauda', 'lund', 'loda',
+  'saala kutta', 'kamina', 'kamine', 'harami', 'chodu', 'chinal', 'raand', 'suar',
+];
+
 // ==================== LOG ACTION TYPES ====================
 // Every distinct kind of event that can be routed to its own log channel.
 // "general" is the fallback used when a specific action has no channel set.
@@ -323,7 +341,13 @@ async function registerCommands() {
       options: [
         {
           name: 'action', description: 'Action to perform', type: 3, required: true,
-          choices: [{ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }],
+          choices: [
+            { name: 'add', value: 'add' },
+            { name: 'remove', value: 'remove' },
+            { name: 'list', value: 'list' },
+            { name: 'reset (load default English/Hindi/Hinglish list)', value: 'reset' },
+            { name: 'clear (empty the list, disables filter)', value: 'clear' },
+          ],
         },
         { name: 'word', description: 'Word to add/remove', type: 3, required: false },
       ],
@@ -423,7 +447,7 @@ const HELP_CATEGORIES = {
   security: {
     label: '🔐 Security',
     emoji: '🔐',
-    commands: ['`/antiping on|off`', '`/filter add|remove|list [word]`', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
+    commands: ['`/antiping on|off`', '`/filter add|remove|list|reset|clear [word]` — `reset` loads a basic English/Hindi/Hinglish profanity list', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
   },
   logging: {
     label: '📋 Logging',
@@ -1141,13 +1165,35 @@ async function handleFilter(interaction) {
 
   if (action === 'list') {
     if (chatFilters[guildId].length === 0) {
-      return interaction.reply({ embeds: [infoEmbed('Filter List', 'No words are currently filtered.')] });
+      return interaction.reply({ embeds: [infoEmbed('Filter List', 'No words are currently filtered. Try `/filter reset` to load a basic starter list.')] });
     }
     const listEmbed = new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🚫 Blocked Words').setColor(THEME.error)
-      .setDescription(chatFilters[guildId].map(w => `• \`${w}\``).join('\n'))
       .setFooter(brandFooter(`${chatFilters[guildId].length} word(s) blocked`)).setTimestamp();
+
+    // Chunk into ~20-word fields so a large (e.g. default) list doesn't blow
+    // past Discord's per-field/description character limits.
+    const CHUNK_SIZE = 20;
+    const words = chatFilters[guildId];
+    for (let i = 0; i < words.length; i += CHUNK_SIZE) {
+      const chunk = words.slice(i, i + CHUNK_SIZE);
+      listEmbed.addFields({ name: `Words ${i + 1}–${i + chunk.length}`, value: chunk.map(w => `\`${w}\``).join(', '), inline: false });
+    }
     return interaction.reply({ embeds: [listEmbed] });
+  }
+
+  if (action === 'reset') {
+    const merged = Array.from(new Set([...chatFilters[guildId], ...DEFAULT_FILTER_WORDS]));
+    chatFilters[guildId] = merged;
+    return interaction.reply({
+      embeds: [successEmbed('Default Filter Loaded', `🚫 Loaded a basic starter wordlist (English, Hindi, and Hinglish profanity).\n**Total blocked:** ${merged.length}\n\nUse \`/filter list\` to review it, or \`/filter add\`/\`/filter remove\` to fine-tune it.`)],
+    });
+  }
+
+  if (action === 'clear') {
+    const count = chatFilters[guildId].length;
+    chatFilters[guildId] = [];
+    return interaction.reply({ embeds: [successEmbed('Filter Cleared', `🗑️ Removed all ${count} blocked word(s). The chat filter is now off until you add words again.`)] });
   }
 }
 
