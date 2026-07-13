@@ -32,17 +32,18 @@ const CLIENT_ID = process.env.CLIENT_ID;
 // A single shared palette so every embed feels like part of one product
 // instead of each command inventing its own colors ad hoc.
 const THEME = {
-  success: 0x57f287,
-  error: 0xed4245,
-  warning: 0xfee75c,
-  info: 0x5865f2,
-  primary: 0x5865f2,
-  danger: 0xc0392b,
-  mute: 0xf39c12,
-  level: 0x9b59b6,
+  success: 0x2ecc71, // #2ECC71
+  error: 0xe74c3c,    // #E74C3C
+  warning: 0xf1c40f,  // #F1C40F
+  info: 0x3498db,     // #3498DB
+  primary: 0x7289da,  // #7289DA
+  danger: 0xe74c3c,   // #E74C3C
+  mute: 0xf1c40f,     // #F1C40F
+  level: 0x7289da,    // #7289DA (rank card accent)
 };
+const BRAND_NAME = 'Z++ Security';
 const FOOTER_ICON = 'https://cdn.discordapp.com/emojis/879640511815659570.gif';
-const brandFooter = (text) => ({ text: `ModBot • ${text}`, iconURL: FOOTER_ICON });
+const brandFooter = (text) => ({ text: `${BRAND_NAME} • ${text}`, iconURL: FOOTER_ICON });
 
 // ==================== DATA STORAGE ====================
 // In-memory, keyed by guildId so nothing leaks between servers. A restart
@@ -56,6 +57,7 @@ const autoRoles = {};       // guildId -> roleId
 const welcomeEnabled = {};  // guildId -> boolean
 const welcomeMessages = {}; // guildId -> template string
 const userLevels = {};      // guildId -> userId -> { xp, lastMessage }
+const snipedMessages = {};  // guildId -> channelId -> { content, authorTag, authorAvatar, timestamp }
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
 
@@ -162,6 +164,11 @@ async function registerCommands() {
       description: 'Show your (or someone else\'s) level and XP',
       options: [{ name: 'user', description: 'User to check', type: 6, required: false }],
     },
+    {
+      name: 'rank',
+      description: 'Check your (or someone else\'s) rank card',
+      options: [{ name: 'user', description: 'User to check', type: 6, required: false }],
+    },
     { name: 'leaderboard', description: 'Show the top 10 members by XP in this server' },
     {
       name: 'userinfo',
@@ -172,7 +179,7 @@ async function registerCommands() {
     {
       name: 'avatar',
       description: "Get a user's avatar",
-      options: [{ name: 'user', description: 'The user to get avatar of', type: 6, required: false }],
+      options: [{ name: 'user', description: 'User to check', type: 6, required: false }],
     },
     {
       name: 'kick',
@@ -286,6 +293,7 @@ async function registerCommands() {
       options: [{ name: 'message', description: 'Use {user} {username} {server} {membercount} as placeholders', type: 3, required: true }],
     },
     { name: 'welcomemessage', description: 'Preview the current welcome message' },
+    { name: 'snipe', description: 'View the last deleted message in this channel' },
   ];
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -324,23 +332,65 @@ async function handlePing(interaction) {
   });
 }
 
+const HELP_CATEGORIES = {
+  moderation: {
+    label: '🛡️ Moderation',
+    commands: ['`/kick <member> [reason]`', '`/ban <member> [reason]`', '`/mute <member> [minutes] [reason]`', '`/unmute <member>`', '`/warn <user> <reason>`', '`/warnings <user>`', '`/clearwarnings <user>`', '`/clear <amount>`', '`/purge <amount> [user] [contains]`', '`/snipe` — View last deleted message'],
+  },
+  security: {
+    label: '🔐 Security',
+    commands: ['`/antiping on|off`', '`/filter add|remove|list [word]`', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setlog <channel>` — Where mod actions get logged', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
+  },
+  utility: {
+    label: '⚙️ Utility',
+    commands: ['`/ping` — Latency check', '`/help` — This menu', '`/userinfo [user]`', '`/serverinfo`', '`/avatar [user]`', '`/setwelcomemessage <message>`'],
+  },
+  community: {
+    label: '🎮 Community',
+    commands: ['`/rank [user]` — Rank card', '`/level [user]` — XP & level card', '`/leaderboard` — Top 10 by XP', '`/welcomemessage` — Preview welcome text'],
+  },
+};
+
 async function handleHelp(interaction) {
+  const guild = interaction.guild;
+  const summaryLines = Object.values(HELP_CATEGORIES)
+    .map((cat) => `${cat.label} — ${cat.commands.length} Commands`)
+    .join('\n');
+
   const helpEmbed = new EmbedBuilder()
-    .setTitle('📚 ModBot Command Directory')
+    .setTitle(`👑 ${BRAND_NAME} Bot — Command Directory`)
     .setColor(THEME.primary)
-    .setDescription('Your complete moderation & community toolkit. Use `/` to explore any command below!')
+    .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**. Use \`/\` to explore any command below.`)
     .addFields(
-      { name: '✨ General', value: '`/ping` — Latency check\n`/help` — This menu\n`/level [user]` — XP & level card\n`/leaderboard` — Top 10 by XP\n`/userinfo [user]` — User details\n`/serverinfo` — Server details\n`/avatar [user]` — Full-size avatar', inline: false },
-      { name: '🛡️ Moderation', value: '`/kick <member> [reason]`\n`/ban <member> [reason]`\n`/mute <member> [minutes] [reason]`\n`/unmute <member>`\n`/warn <user> <reason>`\n`/warnings <user>`\n`/clearwarnings <user>`\n`/clear <amount>`\n`/purge <amount> [user] [contains]`', inline: false },
-      { name: '🔐 Channel Controls', value: '`/lock` — Disable messages here\n`/unlock` — Re-enable messages\n`/setlog <channel>` — Where mod actions get logged', inline: false },
-      { name: '🚫 Automod', value: '`/antiping on|off`\n`/filter add|remove|list [word]`', inline: false },
-      { name: '👋 Welcome System', value: '`/setwelcome <channel>`\n`/setautorole <role>`\n`/welcome on|off`\n`/setwelcomemessage <message>` — supports `{user}` `{username}` `{server}` `{membercount}`\n`/welcomemessage` — preview it', inline: false },
+      { name: '📖 Overview', value: summaryLines, inline: false },
+      { name: HELP_CATEGORIES.moderation.label, value: HELP_CATEGORIES.moderation.commands.join('\n'), inline: false },
+      { name: HELP_CATEGORIES.security.label, value: HELP_CATEGORIES.security.commands.join('\n'), inline: false },
+      { name: HELP_CATEGORIES.utility.label, value: HELP_CATEGORIES.utility.commands.join('\n'), inline: false },
+      { name: HELP_CATEGORIES.community.label, value: HELP_CATEGORIES.community.commands.join('\n'), inline: false },
     )
     .setThumbnail(interaction.client.user.displayAvatarURL())
     .setTimestamp()
     .setFooter(brandFooter('Need more help? Ask a server admin'));
 
   await interaction.reply({ embeds: [helpEmbed] });
+}
+
+async function handleSnipe(interaction) {
+  const sniped = snipedMessages[interaction.guildId]?.[interaction.channelId];
+  if (!sniped) {
+    return interaction.reply({ embeds: [infoEmbed('👀 Nothing to Snipe', 'No recently deleted messages found in this channel.')], ephemeral: true });
+  }
+
+  const snipeEmbed = new EmbedBuilder()
+    .setTitle('👀 Sniped Message')
+    .setColor(THEME.warning)
+    .setAuthor({ name: sniped.authorTag, iconURL: sniped.authorAvatar })
+    .setDescription(sniped.content || '*No text content*')
+    .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: true })
+    .setTimestamp(sniped.timestamp)
+    .setFooter(brandFooter('Deleted Message'));
+
+  await interaction.reply({ embeds: [snipeEmbed] });
 }
 
 async function handleLevel(interaction) {
@@ -962,8 +1012,8 @@ async function handleWelcomeMessagePreview(interaction) {
 // ==================== EVENT HANDLERS ====================
 
 client.once('ready', () => {
-  console.log(`\n${'='.repeat(50)}\n✅ Bot Ready! ${client.user.tag}\nGuilds: ${client.guilds.cache.size}\n${'='.repeat(50)}\n`);
-  client.user.setPresence({ activities: [{ name: 'over your server', type: ActivityType.Watching }], status: 'online' });
+  console.log(`\n${'='.repeat(50)}\n🛡️ ${BRAND_NAME} Ready! ${client.user.tag}\nGuilds: ${client.guilds.cache.size}\n${'='.repeat(50)}\n`);
+  client.user.setPresence({ activities: [{ name: '🛡️ your server | /help', type: ActivityType.Watching }], status: 'online' });
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -982,6 +1032,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'ping': await handlePing(interaction); break;
       case 'help': await handleHelp(interaction); break;
       case 'level': await handleLevel(interaction); break;
+      case 'rank': await handleLevel(interaction); break;
       case 'leaderboard': await handleLeaderboard(interaction); break;
       case 'userinfo': await handleUserInfo(interaction); break;
       case 'serverinfo': await handleServerInfo(interaction); break;
@@ -1005,6 +1056,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'welcome': await handleWelcomeToggle(interaction); break;
       case 'setwelcomemessage': await handleSetWelcomeMessage(interaction); break;
       case 'welcomemessage': await handleWelcomeMessagePreview(interaction); break;
+      case 'snipe': await handleSnipe(interaction); break;
       default:
         await interaction.reply({ embeds: [errorEmbed('Unknown Command', "That command doesn't exist.")], ephemeral: true });
     }
@@ -1154,6 +1206,15 @@ client.on('messageCreate', async (message) => {
 client.on('messageDelete', async (message) => {
   try {
     if (message.partial || !message.author || message.author.bot) return;
+
+    if (!snipedMessages[message.guildId]) snipedMessages[message.guildId] = {};
+    snipedMessages[message.guildId][message.channelId] = {
+      content: message.content,
+      authorTag: message.author.tag,
+      authorAvatar: message.author.displayAvatarURL(),
+      timestamp: Date.now(),
+    };
+
     await sendLog(message.guild, new EmbedBuilder()
       .setTitle('🗑️ Message Deleted').setColor(THEME.warning)
       .addFields(
@@ -1196,6 +1257,7 @@ client.on('guildDelete', (guild) => {
   delete welcomeEnabled[guild.id];
   delete welcomeMessages[guild.id];
   delete userLevels[guild.id];
+  delete snipedMessages[guild.id];
   console.log(`Cleaned up in-memory data for guild ${guild.id} (${guild.name || 'unknown'})`);
 });
 
@@ -1218,7 +1280,7 @@ async function start() {
     const server = http.createServer((req, res) => {
       if (req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'online', bot: 'ModBot', timestamp: new Date().toISOString() }));
+        res.end(JSON.stringify({ status: 'online', bot: BRAND_NAME, timestamp: new Date().toISOString() }));
       } else {
         res.writeHead(404);
         res.end('Not Found');
