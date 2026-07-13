@@ -34,22 +34,6 @@ const client = new Client({
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
-// Permissions requested in the bot's own invite link — covers everything
-// the moderation/community commands above actually need, nothing more.
-const INVITE_PERMISSIONS = [
-  PermissionFlagsBits.KickMembers,
-  PermissionFlagsBits.BanMembers,
-  PermissionFlagsBits.ManageMessages,
-  PermissionFlagsBits.ManageChannels,
-  PermissionFlagsBits.ManageRoles,
-  PermissionFlagsBits.ModerateMembers,
-  PermissionFlagsBits.ViewChannel,
-  PermissionFlagsBits.SendMessages,
-  PermissionFlagsBits.EmbedLinks,
-  PermissionFlagsBits.ReadMessageHistory,
-].reduce((acc, p) => acc | p, 0n);
-const getInviteUrl = () => `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&permissions=${INVITE_PERMISSIONS.toString()}&scope=bot%20applications.commands`;
-
 // ==================== UI THEME ====================
 // A single shared palette so every embed feels like part of one product
 // instead of each command inventing its own colors ad hoc.
@@ -85,7 +69,6 @@ const welcomeEnabled = {};  // guildId -> boolean
 const welcomeMessages = {}; // guildId -> template string
 const userLevels = {};      // guildId -> userId -> { xp, lastMessage }
 const snipedMessages = {};  // guildId -> channelId -> { content, authorTag, authorAvatar, timestamp }
-const addBotEnabled = {};   // guildId -> boolean (default true) — whether /addbot works in this server
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
 
@@ -416,15 +399,6 @@ async function registerCommands() {
     },
     { name: 'welcomemessage', description: 'Preview the current welcome message' },
     { name: 'snipe', description: 'View the last deleted message in this channel' },
-    { name: 'addbot', description: 'Get an invite link to add this bot to another server' },
-    {
-      name: 'addbottoggle',
-      description: 'Admin: allow or disallow the /addbot command in this server',
-      options: [{
-        name: 'state', description: 'Enable or disable', type: 3, required: true,
-        choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }],
-      }],
-    },
   ];
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -473,7 +447,7 @@ const HELP_CATEGORIES = {
   security: {
     label: '🔐 Security',
     emoji: '🔐',
-    commands: ['`/antiping on|off`', '`/filter add|remove|list|reset|clear [word]` — `reset` loads a basic English/Hindi/Hinglish profanity list', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`', '`/addbottoggle on|off` — Allow/disallow `/addbot` in this server'],
+    commands: ['`/antiping on|off`', '`/filter add|remove|list|reset|clear [word]` — `reset` loads a basic English/Hindi/Hinglish profanity list', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
   },
   logging: {
     label: '📋 Logging',
@@ -483,7 +457,7 @@ const HELP_CATEGORIES = {
   utility: {
     label: '⚙️ Utility',
     emoji: '⚙️',
-    commands: ['`/ping` — Latency check', '`/help` — This menu', '`/userinfo [user]`', '`/serverinfo`', '`/avatar [user]`', '`/setwelcomemessage <message>`', '`/addbot` — Get an invite link to add this bot elsewhere'],
+    commands: ['`/ping` — Latency check', '`/help` — This menu', '`/userinfo [user]`', '`/serverinfo`', '`/avatar [user]`', '`/setwelcomemessage <message>`'],
   },
   community: {
     label: '🎮 Community',
@@ -557,37 +531,6 @@ async function handleHelp(interaction) {
     disabledRow.components[0].setDisabled(true);
     await interaction.editReply({ components: [disabledRow] }).catch(() => {});
   });
-}
-
-async function handleAddBot(interaction) {
-  // Per-server opt-out: an admin may have disabled this command for their guild.
-  if (interaction.inGuild() && addBotEnabled[interaction.guildId] === false) {
-    return interaction.reply({ embeds: [infoEmbed('Command Disabled', 'An admin has disabled `/addbot` in this server.')], ephemeral: true });
-  }
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setLabel('➕ Add to Server').setStyle(ButtonStyle.Link).setURL(getInviteUrl()),
-  );
-
-  await interaction.reply({
-    embeds: [new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle(`🛡️ Add ${BRAND_NAME} to Your Server`)
-      .setDescription(`Click the button below to invite **${BRAND_NAME}** to another server.\n${DIVIDER}\nYou'll need **Manage Server** permission on the destination server to complete the invite.`)
-      .setColor(THEME.primary)
-      .setThumbnail(client.user?.displayAvatarURL({ size: 256 }) || null)
-      .setTimestamp()
-      .setFooter(brandFooter('Invite Link'))],
-    components: [row],
-  });
-}
-
-async function handleAddBotToggle(interaction) {
-  if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
-  }
-  const state = interaction.options.getString('state');
-  addBotEnabled[interaction.guildId] = state === 'on';
-  await interaction.reply({ embeds: [successEmbed('Add-Bot Command', `\`/addbot\` is now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}** in this server.`)] });
 }
 
 async function handleSnipe(interaction) {
@@ -1379,7 +1322,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // Most commands need interaction.guild/.member — fail fast and clean in DMs
   // instead of throwing a TypeError deep inside a handler.
-  if (!interaction.inGuild() && !['ping', 'help', 'addbot'].includes(command)) {
+  if (!interaction.inGuild() && !['ping', 'help'].includes(command)) {
     return interaction.reply({ embeds: [errorEmbed('Server Only', 'This command can only be used inside a server.')], ephemeral: true });
   }
 
@@ -1416,8 +1359,6 @@ client.on('interactionCreate', async (interaction) => {
       case 'setwelcomemessage': await handleSetWelcomeMessage(interaction); break;
       case 'welcomemessage': await handleWelcomeMessagePreview(interaction); break;
       case 'snipe': await handleSnipe(interaction); break;
-      case 'addbot': await handleAddBot(interaction); break;
-      case 'addbottoggle': await handleAddBotToggle(interaction); break;
       default:
         await interaction.reply({ embeds: [errorEmbed('Unknown Command', "That command doesn't exist.")], ephemeral: true });
     }
@@ -1632,7 +1573,6 @@ client.on('guildDelete', (guild) => {
   delete welcomeMessages[guild.id];
   delete userLevels[guild.id];
   delete snipedMessages[guild.id];
-  delete addBotEnabled[guild.id];
   console.log(`Cleaned up in-memory data for guild ${guild.id} (${guild.name || 'unknown'})`);
 });
 
