@@ -9,6 +9,10 @@ const {
   Routes,
   EmbedBuilder,
   ActivityType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
 } = require('discord.js');
 
 // ==================== CONFIGURATION ====================
@@ -44,6 +48,10 @@ const THEME = {
 const BRAND_NAME = 'Z++ Security';
 const FOOTER_ICON = 'https://cdn.discordapp.com/emojis/879640511815659570.gif';
 const brandFooter = (text) => ({ text: `${BRAND_NAME} • ${text}`, iconURL: FOOTER_ICON });
+/** Consistent "product" header — bot avatar + brand name — on top of every embed. */
+const brandAuthor = () => ({ name: `${BRAND_NAME} 🛡️`, iconURL: client.user?.displayAvatarURL() || FOOTER_ICON });
+/** Thin unicode rule used to separate sections inside longer embeds. */
+const DIVIDER = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
 
 // ==================== DATA STORAGE ====================
 // In-memory, keyed by guildId so nothing leaks between servers. A restart
@@ -120,22 +128,55 @@ async function sendLog(guild, embed) {
 }
 
 function successEmbed(title, description) {
-  return new EmbedBuilder().setTitle(`✅ ${title}`).setDescription(description).setColor(THEME.success).setTimestamp().setFooter(brandFooter('Action Completed'));
+  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`✅ ${title}`).setDescription(description).setColor(THEME.success).setTimestamp().setFooter(brandFooter('Action Completed'));
 }
 function errorEmbed(title, description) {
-  return new EmbedBuilder().setTitle(`❌ ${title}`).setDescription(description).setColor(THEME.error).setTimestamp().setFooter(brandFooter('Error'));
+  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`❌ ${title}`).setDescription(description).setColor(THEME.error).setTimestamp().setFooter(brandFooter('Error'));
 }
 function infoEmbed(title, description) {
-  return new EmbedBuilder().setTitle(`ℹ️ ${title}`).setDescription(description).setColor(THEME.info).setTimestamp().setFooter(brandFooter('Information'));
+  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`ℹ️ ${title}`).setDescription(description).setColor(THEME.info).setTimestamp().setFooter(brandFooter('Information'));
 }
 function warningEmbed(title, description) {
-  return new EmbedBuilder().setTitle(`⚠️ ${title}`).setDescription(description).setColor(THEME.warning).setTimestamp().setFooter(brandFooter('Warning'));
+  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`⚠️ ${title}`).setDescription(description).setColor(THEME.warning).setTimestamp().setFooter(brandFooter('Warning'));
 }
 
 async function safeInteractionReply(interaction, response) {
   if (interaction.deferred) return interaction.editReply(response);
   if (interaction.replied) return interaction.followUp(response);
   return interaction.reply(response);
+}
+
+/**
+ * Shows a warning embed with Confirm/Cancel buttons and waits for the
+ * original invoker to click one. Resolves to true (confirmed), false
+ * (cancelled), or null (timed out) — the caller decides what to do next.
+ */
+async function confirmAction(interaction, { title, description }) {
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('confirm').setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('cancel').setLabel('Cancel').setEmoji('❌').setStyle(ButtonStyle.Secondary),
+  );
+  const embed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setTitle(`⚠️ ${title}`)
+    .setDescription(`${description}\n${DIVIDER}\n*This action cannot be undone.*`)
+    .setColor(THEME.warning)
+    .setTimestamp();
+
+  const message = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+
+  try {
+    const btn = await message.awaitMessageComponent({
+      componentType: ComponentType.Button,
+      filter: (b) => b.user.id === interaction.user.id,
+      time: 15_000,
+    });
+    await btn.deferUpdate();
+    return btn.customId === 'confirm';
+  } catch {
+    await interaction.editReply({ components: [] }).catch(() => {});
+    return null;
+  }
 }
 
 function hasInvite(content) {
@@ -322,7 +363,7 @@ async function handlePing(interaction) {
 
   await interaction.reply({
     embeds: [
-      new EmbedBuilder()
+      new EmbedBuilder().setAuthor(brandAuthor())
         .setTitle('🏓 Pong!')
         .setDescription(`**Latency:** \`${latency}ms\`\n**Status:** ${speedStatus}`)
         .setColor(color)
@@ -333,6 +374,7 @@ async function handlePing(interaction) {
 }
 
 const HELP_CATEGORIES = {
+  overview: { label: '📖 Overview', emoji: '📖' },
   moderation: {
     label: '🛡️ Moderation',
     commands: ['`/kick <member> [reason]`', '`/ban <member> [reason]`', '`/mute <member> [minutes] [reason]`', '`/unmute <member>`', '`/warn <user> <reason>`', '`/warnings <user>`', '`/clearwarnings <user>`', '`/clear <amount>`', '`/purge <amount> [user] [contains]`', '`/snipe` — View last deleted message'],
@@ -350,29 +392,66 @@ const HELP_CATEGORIES = {
     commands: ['`/rank [user]` — Rank card', '`/level [user]` — XP & level card', '`/leaderboard` — Top 10 by XP', '`/welcomemessage` — Preview welcome text'],
   },
 };
+const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'utility', 'community'];
+
+function buildHelpEmbed(pageIndex, guild) {
+  const key = HELP_PAGE_ORDER[pageIndex];
+  const embed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setColor(THEME.primary)
+    .setTimestamp()
+    .setFooter(brandFooter(`Page ${pageIndex + 1} of ${HELP_PAGE_ORDER.length} • Need more help? Ask a server admin`));
+
+  if (key === 'overview') {
+    const summaryLines = HELP_PAGE_ORDER.slice(1)
+      .map((k) => `${HELP_CATEGORIES[k].label} — **${HELP_CATEGORIES[k].commands.length}** Commands`)
+      .join('\n');
+    embed
+      .setTitle('👑 Z++ Security Bot — Command Directory')
+      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n${DIVIDER}\nUse the buttons below to browse each category.`)
+      .addFields({ name: '📊 Categories', value: summaryLines, inline: false });
+  } else {
+    const cat = HELP_CATEGORIES[key];
+    embed
+      .setTitle(cat.label)
+      .setDescription(`${DIVIDER}\n${cat.commands.join('\n')}`);
+  }
+  return embed;
+}
+
+function buildHelpRow(pageIndex, userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`help_prev_${userId}`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(pageIndex === 0),
+    new ButtonBuilder().setCustomId(`help_page_${userId}`).setLabel(`${pageIndex + 1} / ${HELP_PAGE_ORDER.length}`).setStyle(ButtonStyle.Primary).setDisabled(true),
+    new ButtonBuilder().setCustomId(`help_next_${userId}`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(pageIndex === HELP_PAGE_ORDER.length - 1),
+  );
+}
 
 async function handleHelp(interaction) {
-  const guild = interaction.guild;
-  const summaryLines = Object.values(HELP_CATEGORIES)
-    .map((cat) => `${cat.label} — ${cat.commands.length} Commands`)
-    .join('\n');
+  let pageIndex = 0;
+  const message = await interaction.reply({
+    embeds: [buildHelpEmbed(pageIndex, interaction.guild)],
+    components: [buildHelpRow(pageIndex, interaction.user.id)],
+    fetchReply: true,
+  });
 
-  const helpEmbed = new EmbedBuilder()
-    .setTitle(`👑 ${BRAND_NAME} Bot — Command Directory`)
-    .setColor(THEME.primary)
-    .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**. Use \`/\` to explore any command below.`)
-    .addFields(
-      { name: '📖 Overview', value: summaryLines, inline: false },
-      { name: HELP_CATEGORIES.moderation.label, value: HELP_CATEGORIES.moderation.commands.join('\n'), inline: false },
-      { name: HELP_CATEGORIES.security.label, value: HELP_CATEGORIES.security.commands.join('\n'), inline: false },
-      { name: HELP_CATEGORIES.utility.label, value: HELP_CATEGORIES.utility.commands.join('\n'), inline: false },
-      { name: HELP_CATEGORIES.community.label, value: HELP_CATEGORIES.community.commands.join('\n'), inline: false },
-    )
-    .setThumbnail(interaction.client.user.displayAvatarURL())
-    .setTimestamp()
-    .setFooter(brandFooter('Need more help? Ask a server admin'));
+  const collector = message.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: 120_000,
+    filter: (btn) => btn.user.id === interaction.user.id,
+  });
 
-  await interaction.reply({ embeds: [helpEmbed] });
+  collector.on('collect', async (btn) => {
+    if (btn.customId === `help_prev_${interaction.user.id}`) pageIndex = Math.max(0, pageIndex - 1);
+    if (btn.customId === `help_next_${interaction.user.id}`) pageIndex = Math.min(HELP_PAGE_ORDER.length - 1, pageIndex + 1);
+    await btn.update({ embeds: [buildHelpEmbed(pageIndex, interaction.guild)], components: [buildHelpRow(pageIndex, interaction.user.id)] });
+  });
+
+  collector.on('end', async () => {
+    const disabledRow = buildHelpRow(pageIndex, interaction.user.id);
+    disabledRow.components.forEach((c) => c.setDisabled(true));
+    await interaction.editReply({ components: [disabledRow] }).catch(() => {});
+  });
 }
 
 async function handleSnipe(interaction) {
@@ -382,11 +461,15 @@ async function handleSnipe(interaction) {
   }
 
   const snipeEmbed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
     .setTitle('👀 Sniped Message')
     .setColor(THEME.warning)
-    .setAuthor({ name: sniped.authorTag, iconURL: sniped.authorAvatar })
-    .setDescription(sniped.content || '*No text content*')
-    .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: true })
+    .addFields(
+      { name: 'Author', value: sniped.authorTag, inline: true },
+      { name: 'Channel', value: `${interaction.channel}`, inline: true },
+    )
+    .setDescription(`${DIVIDER}\n${sniped.content || '*No text content*'}`)
+    .setThumbnail(sniped.authorAvatar)
     .setTimestamp(sniped.timestamp)
     .setFooter(brandFooter('Deleted Message'));
 
@@ -407,7 +490,7 @@ async function handleLevel(interaction) {
   const sorted = Object.entries(userLevels[guildId] || {}).sort((a, b) => b[1].xp - a[1].xp);
   const rank = sorted.findIndex(([id]) => id === targetUser.id) + 1;
 
-  const levelEmbed = new EmbedBuilder()
+  const levelEmbed = new EmbedBuilder().setAuthor(brandAuthor())
     .setTitle(`🏆 ${targetUser.username}'s Rank Card`)
     .setColor(THEME.level)
     .setThumbnail(targetUser.displayAvatarURL({ size: 256 }))
@@ -439,7 +522,7 @@ async function handleLeaderboard(interaction) {
     return `${rankIcon} <@${userId}> — Level **${level}** (${data.xp} XP)`;
   });
 
-  const leaderboardEmbed = new EmbedBuilder()
+  const leaderboardEmbed = new EmbedBuilder().setAuthor(brandAuthor())
     .setTitle(`📊 ${interaction.guild.name} Leaderboard`)
     .setColor(THEME.level)
     .setDescription(lines.join('\n'))
@@ -454,7 +537,7 @@ async function handleUserInfo(interaction) {
   const user = interaction.options.getUser('user') || interaction.user;
   const member = await interaction.guild.members.fetch(user.id).catch(() => null);
 
-  const userInfoEmbed = new EmbedBuilder()
+  const userInfoEmbed = new EmbedBuilder().setAuthor(brandAuthor())
     .setTitle(`👤 ${user.username}`)
     .setColor(THEME.primary)
     .setThumbnail(user.displayAvatarURL({ size: 256 }))
@@ -488,7 +571,7 @@ async function handleServerInfo(interaction) {
   const guild = interaction.guild;
   const botCount = guild.members.cache.filter(m => m.user.bot).size;
 
-  const serverInfoEmbed = new EmbedBuilder()
+  const serverInfoEmbed = new EmbedBuilder().setAuthor(brandAuthor())
     .setTitle(`🏢 ${guild.name}`)
     .setColor(THEME.info)
     .setThumbnail(guild.iconURL({ size: 256 }))
@@ -510,7 +593,7 @@ async function handleServerInfo(interaction) {
 
 async function handleAvatar(interaction) {
   const user = interaction.options.getUser('user') || interaction.user;
-  const avatarEmbed = new EmbedBuilder()
+  const avatarEmbed = new EmbedBuilder().setAuthor(brandAuthor())
     .setTitle(`🖼️ ${user.username}'s Avatar`)
     .setColor(THEME.primary)
     .setImage(user.displayAvatarURL({ size: 1024 }))
@@ -538,9 +621,21 @@ async function handleKick(interaction) {
     return interaction.reply({ embeds: [errorEmbed('Cannot Kick', "⛔ My role isn't high enough to kick this user. Move my role above theirs.")], ephemeral: true });
   }
 
+  const confirmed = await confirmAction(interaction, {
+    title: 'Confirm Kick',
+    description: `Kick **${targetUser.tag}** from the server?\n**Reason:** \`${reason}\``,
+  });
+  if (confirmed === null) {
+    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — kick cancelled.')], components: [] });
+  }
+  if (confirmed === false) {
+    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Kick for **${targetUser.tag}** was cancelled.`)], components: [] });
+  }
+
   try {
     await targetMember.kick(reason);
     await sendLog(interaction.guild, new EmbedBuilder()
+      .setAuthor(brandAuthor())
       .setTitle('👢 Member Kicked').setColor(THEME.error).setThumbnail(targetUser.displayAvatarURL())
       .addFields(
         { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
@@ -548,17 +643,19 @@ async function handleKick(interaction) {
         { name: '📝 Reason', value: `\`${reason}\``, inline: false },
       ).setTimestamp().setFooter(brandFooter('Member Action')));
 
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [new EmbedBuilder()
+        .setAuthor(brandAuthor())
         .setTitle('👢 Kick Successful')
         .setDescription(`**${targetUser.tag}** has been removed from the server.`)
         .addFields({ name: 'Reason', value: `\`${reason}\``, inline: false })
         .setColor(THEME.success).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
+      components: [],
     });
   } catch (error) {
     console.error('Kick error:', error);
     const description = error.code === 50013 ? "⚠️ I don't have permission to kick this member." : '⚠️ Could not kick the member. Please try again.';
-    await interaction.reply({ embeds: [errorEmbed('Kick Failed', description)], ephemeral: true });
+    await interaction.editReply({ embeds: [errorEmbed('Kick Failed', description)], components: [] });
   }
 }
 
@@ -578,9 +675,21 @@ async function handleBan(interaction) {
     return interaction.reply({ embeds: [errorEmbed('Cannot Ban', "⛔ My role isn't high enough to ban this user. Move my role above theirs.")], ephemeral: true });
   }
 
+  const confirmed = await confirmAction(interaction, {
+    title: 'Confirm Ban',
+    description: `Permanently ban **${targetUser.tag}** from the server?\n**Reason:** \`${reason}\``,
+  });
+  if (confirmed === null) {
+    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — ban cancelled.')], components: [] });
+  }
+  if (confirmed === false) {
+    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Ban for **${targetUser.tag}** was cancelled.`)], components: [] });
+  }
+
   try {
     await interaction.guild.bans.create(targetUser.id, { reason });
     await sendLog(interaction.guild, new EmbedBuilder()
+      .setAuthor(brandAuthor())
       .setTitle('🔨 Member Banned').setColor(THEME.danger).setThumbnail(targetUser.displayAvatarURL())
       .addFields(
         { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
@@ -588,17 +697,19 @@ async function handleBan(interaction) {
         { name: '📝 Reason', value: `\`${reason}\``, inline: false },
       ).setTimestamp().setFooter(brandFooter('Member Action')));
 
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [new EmbedBuilder()
+        .setAuthor(brandAuthor())
         .setTitle('🔨 Ban Successful')
         .setDescription(`**${targetUser.tag}** has been **permanently banned**.`)
         .addFields({ name: 'Reason', value: `\`${reason}\``, inline: false })
         .setColor(THEME.danger).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
+      components: [],
     });
   } catch (error) {
     console.error('Ban error:', error);
     const description = error.code === 50013 ? "⚠️ I don't have permission to ban this member." : '⚠️ Could not ban the member. Please try again.';
-    await interaction.reply({ embeds: [errorEmbed('Ban Failed', description)], ephemeral: true });
+    await interaction.editReply({ embeds: [errorEmbed('Ban Failed', description)], components: [] });
   }
 }
 
@@ -630,7 +741,7 @@ async function handleMute(interaction) {
 
   try {
     await targetMember.timeout(minutes * 60 * 1000, reason);
-    await sendLog(interaction.guild, new EmbedBuilder()
+    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🔇 Member Muted').setColor(THEME.mute).setThumbnail(targetUser.displayAvatarURL())
       .addFields(
         { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
@@ -640,7 +751,7 @@ async function handleMute(interaction) {
       ).setTimestamp().setFooter(brandFooter('Member Action')));
 
     await interaction.reply({
-      embeds: [new EmbedBuilder()
+      embeds: [new EmbedBuilder().setAuthor(brandAuthor())
         .setTitle('🔇 Mute Successful')
         .setDescription(`**${targetUser.tag}** has been muted.`)
         .addFields(
@@ -670,7 +781,7 @@ async function handleUnmute(interaction) {
 
   try {
     await targetMember.timeout(null);
-    await sendLog(interaction.guild, new EmbedBuilder()
+    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🔊 Member Unmuted').setColor(THEME.success)
       .addFields(
         { name: 'Member', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
@@ -698,7 +809,7 @@ async function handleWarn(interaction) {
   warnings[guildId][targetUser.id].push({ mod: moderator.user.tag, reason, timestamp: Date.now() });
   const total = warnings[guildId][targetUser.id].length;
 
-  await sendLog(interaction.guild, new EmbedBuilder()
+  await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
     .setTitle('⚠️ User Warned').setColor(THEME.warning)
     .addFields(
       { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
@@ -723,7 +834,7 @@ async function handleWarnings(interaction) {
 
   if (!userWarnings || userWarnings.length === 0) {
     return interaction.reply({
-      embeds: [new EmbedBuilder()
+      embeds: [new EmbedBuilder().setAuthor(brandAuthor())
         .setTitle('📋 Clean Record')
         .setDescription(`✅ **${targetUser.tag}** has no warnings.`)
         .setColor(THEME.success).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Clear Record'))],
@@ -736,7 +847,7 @@ async function handleWarnings(interaction) {
   }).join('\n\n');
 
   await interaction.reply({
-    embeds: [new EmbedBuilder()
+    embeds: [new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle(`⚠️ Warnings — ${targetUser.tag}`)
       .setColor(THEME.warning).setDescription(warningList).setThumbnail(targetUser.displayAvatarURL())
       .addFields({ name: '📊 Summary', value: `**Total:** ${userWarnings.length}`, inline: false })
@@ -758,16 +869,28 @@ async function handleClearWarnings(interaction) {
   }
 
   const count = userWarnings.length;
+  const confirmed = await confirmAction(interaction, {
+    title: 'Confirm Clear Warnings',
+    description: `Clear all **${count}** warning(s) for **${targetUser.tag}**?`,
+  });
+  if (confirmed === null) {
+    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — nothing was cleared.')], components: [] });
+  }
+  if (confirmed === false) {
+    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Clear warnings for **${targetUser.tag}** was cancelled.`)], components: [] });
+  }
+
   warnings[guildId][targetUser.id] = [];
 
   await sendLog(interaction.guild, new EmbedBuilder()
+    .setAuthor(brandAuthor())
     .setTitle('🧹 Warnings Cleared').setColor(THEME.success)
     .addFields(
       { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
       { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
       { name: 'Cleared', value: `${count}`, inline: true },
     ).setTimestamp());
-  await interaction.reply({ embeds: [successEmbed('Warnings Cleared', `All ${count} warnings for **${targetUser.tag}** have been cleared.`)] });
+  await interaction.editReply({ embeds: [successEmbed('Warnings Cleared', `All ${count} warnings for **${targetUser.tag}** have been cleared.`)], components: [] });
 }
 
 async function handleClear(interaction) {
@@ -828,7 +951,7 @@ async function handlePurge(interaction) {
     if (filterUser) summary += `\n**By User:** ${filterUser.tag}`;
     if (filterText) summary += `\n**Contains:** \`${filterText}\``;
 
-    await sendLog(interaction.guild, new EmbedBuilder()
+    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🧹 Messages Purged').setColor(THEME.info).setDescription(summary)
       .addFields(
         { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
@@ -850,10 +973,25 @@ async function handleLock(interaction) {
   try {
     await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
     await sendLog(interaction.guild, new EmbedBuilder()
+      .setAuthor(brandAuthor())
       .setTitle('🔒 Channel Locked').setColor(THEME.error)
       .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${moderator.user.tag}`, inline: true })
       .setTimestamp());
-    await interaction.reply({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.')] });
+
+    const unlockRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('quick_unlock').setLabel('Unlock').setEmoji('🔓').setStyle(ButtonStyle.Success),
+    );
+    const message = await interaction.reply({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.')], components: [unlockRow], fetchReply: true });
+
+    message.awaitMessageComponent({ componentType: ComponentType.Button, filter: (b) => b.customId === 'quick_unlock', time: 60_000 })
+      .then(async (btn) => {
+        if (!btn.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+          return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
+        }
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null });
+        await btn.update({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.')], components: [] });
+      })
+      .catch(() => interaction.editReply({ components: [] }).catch(() => {}));
   } catch (error) {
     console.error('Lock error:', error);
     await interaction.reply({ embeds: [errorEmbed('Error', 'Could not lock channel.')], ephemeral: true });
@@ -868,10 +1006,25 @@ async function handleUnlock(interaction) {
   try {
     await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null });
     await sendLog(interaction.guild, new EmbedBuilder()
+      .setAuthor(brandAuthor())
       .setTitle('🔓 Channel Unlocked').setColor(THEME.success)
       .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${moderator.user.tag}`, inline: true })
       .setTimestamp());
-    await interaction.reply({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.')] });
+
+    const lockRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('quick_lock').setLabel('Lock').setEmoji('🔒').setStyle(ButtonStyle.Danger),
+    );
+    const message = await interaction.reply({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.')], components: [lockRow], fetchReply: true });
+
+    message.awaitMessageComponent({ componentType: ComponentType.Button, filter: (b) => b.customId === 'quick_lock', time: 60_000 })
+      .then(async (btn) => {
+        if (!btn.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+          return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
+        }
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
+        await btn.update({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.')], components: [] });
+      })
+      .catch(() => interaction.editReply({ components: [] }).catch(() => {}));
   } catch (error) {
     console.error('Unlock error:', error);
     await interaction.reply({ embeds: [errorEmbed('Error', 'Could not unlock channel.')], ephemeral: true });
@@ -920,7 +1073,7 @@ async function handleFilter(interaction) {
     if (chatFilters[guildId].length === 0) {
       return interaction.reply({ embeds: [infoEmbed('Filter List', 'No words are currently filtered.')] });
     }
-    const listEmbed = new EmbedBuilder()
+    const listEmbed = new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🚫 Blocked Words').setColor(THEME.error)
       .setDescription(chatFilters[guildId].map(w => `• \`${w}\``).join('\n'))
       .setFooter(brandFooter(`${chatFilters[guildId].length} word(s) blocked`)).setTimestamp();
@@ -1088,7 +1241,7 @@ client.on('guildMemberAdd', async (member) => {
       const channel = await member.guild.channels.fetch(welcomeChannelId).catch(() => null);
       if (channel?.isTextBased()) {
         const template = welcomeMessages[guildId] || DEFAULT_WELCOME_MESSAGE;
-        const welcomeEmbed = new EmbedBuilder()
+        const welcomeEmbed = new EmbedBuilder().setAuthor(brandAuthor())
           .setTitle('👋 A Wild Member Appears!')
           .setDescription(renderWelcomeMessage(template, member))
           .setColor(THEME.success)
@@ -1109,7 +1262,7 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('guildMemberRemove', async (member) => {
   try {
-    await sendLog(member.guild, new EmbedBuilder()
+    await sendLog(member.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('👋 Member Left').setColor(THEME.error).setThumbnail(member.user.displayAvatarURL({ size: 256 }))
       .addFields(
         { name: 'Member', value: `${member.user.tag} (${member.user.id})`, inline: false },
@@ -1142,7 +1295,7 @@ client.on('messageCreate', async (message) => {
         const newLevel = getLevelFromXp(levelData.xp);
         if (newLevel > oldLevel) {
           message.channel.send({
-            embeds: [new EmbedBuilder()
+            embeds: [new EmbedBuilder().setAuthor(brandAuthor())
               .setTitle('🎉 Level Up!')
               .setDescription(`${message.author} just reached **Level ${newLevel}**!`)
               .setColor(THEME.level)
@@ -1186,7 +1339,7 @@ client.on('messageCreate', async (message) => {
       try {
         await message.delete();
         const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Invite Deleted', 'Discord invites are not allowed in this server.')] });
-        await sendLog(message.guild, new EmbedBuilder()
+        await sendLog(message.guild, new EmbedBuilder().setAuthor(brandAuthor())
           .setTitle('🔗 Invite Link Detected').setColor(THEME.warning)
           .addFields(
             { name: 'User', value: `${message.author.tag} (${message.author.id})`, inline: false },
@@ -1215,7 +1368,7 @@ client.on('messageDelete', async (message) => {
       timestamp: Date.now(),
     };
 
-    await sendLog(message.guild, new EmbedBuilder()
+    await sendLog(message.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🗑️ Message Deleted').setColor(THEME.warning)
       .addFields(
         { name: 'Author', value: `${message.author.tag} (${message.author.id})`, inline: false },
@@ -1232,7 +1385,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
     if (oldMessage.partial || newMessage.partial) return;
     if (!oldMessage.author || oldMessage.author.bot) return;
     if (oldMessage.content === newMessage.content) return;
-    await sendLog(oldMessage.guild, new EmbedBuilder()
+    await sendLog(oldMessage.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('✏️ Message Edited').setColor(THEME.info)
       .addFields(
         { name: 'Author', value: `${oldMessage.author.tag} (${oldMessage.author.id})`, inline: false },
