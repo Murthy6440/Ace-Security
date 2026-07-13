@@ -13,6 +13,8 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
 } = require('discord.js');
 
 // ==================== CONFIGURATION ====================
@@ -59,7 +61,8 @@ const DIVIDER = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
 const warnings = {};        // guildId -> { userId -> Array<{ mod, reason, timestamp }> }
 const antiPing = {};        // guildId -> boolean
 const chatFilters = {};     // guildId -> Array<string>
-const logChannels = {};     // guildId -> channelId
+// guildId -> { general?: channelId, <logAction>?: channelId, ... } — per-action log routing.
+const logChannels = {};
 const welcomeChannels = {}; // guildId -> channelId
 const autoRoles = {};       // guildId -> roleId
 const welcomeEnabled = {};  // guildId -> boolean
@@ -68,6 +71,39 @@ const userLevels = {};      // guildId -> userId -> { xp, lastMessage }
 const snipedMessages = {};  // guildId -> channelId -> { content, authorTag, authorAvatar, timestamp }
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
+
+// ==================== LOG ACTION TYPES ====================
+// Every distinct kind of event that can be routed to its own log channel.
+// "general" is the fallback used when a specific action has no channel set.
+const LOG_ACTIONS = {
+  general: { label: 'General (fallback for everything else)', emoji: '📋' },
+  ban: { label: 'Bans', emoji: '🔨' },
+  kick: { label: 'Kicks', emoji: '👢' },
+  mute: { label: 'Mutes / Unmutes', emoji: '🔇' },
+  warn: { label: 'Warnings (issued & cleared)', emoji: '⚠️' },
+  purge: { label: 'Purge / Clear', emoji: '🧹' },
+  lock: { label: 'Channel Lock / Unlock', emoji: '🔒' },
+  antiping: { label: 'Anti-Ping / Invite Filter', emoji: '🛡️' },
+  message: { label: 'Message Edits & Deletes', emoji: '✏️' },
+  member: { label: 'Member Join / Leave', emoji: '👤' },
+};
+const LOG_ACTION_CHOICES = Object.entries(LOG_ACTIONS).map(([value, meta]) => ({ name: `${meta.emoji} ${meta.label}`, value }));
+
+/** Resolves which channel a given log action should post to, falling back to "general". */
+async function sendLog(guild, embed, action = 'general') {
+  const guildConfig = logChannels[guild.id];
+  if (!guildConfig) return;
+  const channelId = guildConfig[action] || guildConfig.general;
+  if (!channelId) return;
+  try {
+    const channel = await guild.channels.fetch(channelId);
+    if (channel && channel.isTextBased()) {
+      await channel.send({ embeds: [embed] });
+    }
+  } catch (error) {
+    console.error('Error sending log:', error);
+  }
+}
 
 // ==================== LEVEL SYSTEM HELPERS ====================
 function getUserLevelData(guildId, userId) {
@@ -112,19 +148,6 @@ function canBotModerate(guild, target) {
   if (!me) return false;
   if (isGuildOwner(target)) return false;
   return me.roles.highest.position > target.roles.highest.position;
-}
-
-async function sendLog(guild, embed) {
-  const logChannelId = logChannels[guild.id];
-  if (!logChannelId) return;
-  try {
-    const channel = await guild.channels.fetch(logChannelId);
-    if (channel && channel.isTextBased()) {
-      await channel.send({ embeds: [embed] });
-    }
-  } catch (error) {
-    console.error('Error sending log:', error);
-  }
 }
 
 function successEmbed(title, description) {
@@ -307,9 +330,26 @@ async function registerCommands() {
     },
     {
       name: 'setlog',
-      description: 'Set the log channel',
-      options: [{ name: 'channel', description: 'Channel for logs', type: 7, required: true }],
+      description: 'Set the log channel for a specific action type (or general fallback)',
+      options: [
+        { name: 'channel', description: 'Channel for these logs', type: 7, required: true },
+        {
+          name: 'action', description: 'Which action to route to this channel (default: general)', type: 3, required: false,
+          choices: LOG_ACTION_CHOICES.map(c => ({ name: c.name.replace(/^\S+\s/, ''), value: c.value })),
+        },
+      ],
     },
+    {
+      name: 'removelog',
+      description: 'Remove a per-action log channel (falls back to general)',
+      options: [
+        {
+          name: 'action', description: 'Which action to unset', type: 3, required: true,
+          choices: LOG_ACTION_CHOICES.filter(c => c.value !== 'general').map(c => ({ name: c.name.replace(/^\S+\s/, ''), value: c.value })),
+        },
+      ],
+    },
+    { name: 'logs', description: 'View the current log channel configuration' },
     {
       name: 'setwelcome',
       description: 'Set the welcome channel',
@@ -377,41 +417,49 @@ const HELP_CATEGORIES = {
   overview: { label: '📖 Overview', emoji: '📖' },
   moderation: {
     label: '🛡️ Moderation',
+    emoji: '🛡️',
     commands: ['`/kick <member> [reason]`', '`/ban <member> [reason]`', '`/mute <member> [minutes] [reason]`', '`/unmute <member>`', '`/warn <user> <reason>`', '`/warnings <user>`', '`/clearwarnings <user>`', '`/clear <amount>`', '`/purge <amount> [user] [contains]`', '`/snipe` — View last deleted message'],
   },
   security: {
     label: '🔐 Security',
-    commands: ['`/antiping on|off`', '`/filter add|remove|list [word]`', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setlog <channel>` — Where mod actions get logged', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
+    emoji: '🔐',
+    commands: ['`/antiping on|off`', '`/filter add|remove|list [word]`', '`/lock` — Disable messages here', '`/unlock` — Re-enable messages', '`/setautorole <role>`', '`/welcome on|off`', '`/setwelcome <channel>`'],
+  },
+  logging: {
+    label: '📋 Logging',
+    emoji: '📋',
+    commands: ['`/setlog <channel> [action]` — Route a specific action to a channel', '`/removelog <action>` — Unset a per-action log channel', '`/logs` — View the current log configuration'],
   },
   utility: {
     label: '⚙️ Utility',
+    emoji: '⚙️',
     commands: ['`/ping` — Latency check', '`/help` — This menu', '`/userinfo [user]`', '`/serverinfo`', '`/avatar [user]`', '`/setwelcomemessage <message>`'],
   },
   community: {
     label: '🎮 Community',
+    emoji: '🎮',
     commands: ['`/rank [user]` — Rank card', '`/level [user]` — XP & level card', '`/leaderboard` — Top 10 by XP', '`/welcomemessage` — Preview welcome text'],
   },
 };
-const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'utility', 'community'];
+const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utility', 'community'];
 
-function buildHelpEmbed(pageIndex, guild) {
-  const key = HELP_PAGE_ORDER[pageIndex];
+function buildHelpEmbed(pageKey, guild) {
   const embed = new EmbedBuilder()
     .setAuthor(brandAuthor())
     .setColor(THEME.primary)
     .setTimestamp()
-    .setFooter(brandFooter(`Page ${pageIndex + 1} of ${HELP_PAGE_ORDER.length} • Need more help? Ask a server admin`));
+    .setFooter(brandFooter('Pick a category below • Need more help? Ask a server admin'));
 
-  if (key === 'overview') {
+  if (pageKey === 'overview') {
     const summaryLines = HELP_PAGE_ORDER.slice(1)
       .map((k) => `${HELP_CATEGORIES[k].label} — **${HELP_CATEGORIES[k].commands.length}** Commands`)
       .join('\n');
     embed
       .setTitle('👑 Z++ Security Bot — Command Directory')
-      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n${DIVIDER}\nUse the buttons below to browse each category.`)
+      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n${DIVIDER}\nUse the dropdown below to jump straight to a category.`)
       .addFields({ name: '📊 Categories', value: summaryLines, inline: false });
   } else {
-    const cat = HELP_CATEGORIES[key];
+    const cat = HELP_CATEGORIES[pageKey];
     embed
       .setTitle(cat.label)
       .setDescription(`${DIVIDER}\n${cat.commands.join('\n')}`);
@@ -419,37 +467,44 @@ function buildHelpEmbed(pageIndex, guild) {
   return embed;
 }
 
-function buildHelpRow(pageIndex, userId) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`help_prev_${userId}`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(pageIndex === 0),
-    new ButtonBuilder().setCustomId(`help_page_${userId}`).setLabel(`${pageIndex + 1} / ${HELP_PAGE_ORDER.length}`).setStyle(ButtonStyle.Primary).setDisabled(true),
-    new ButtonBuilder().setCustomId(`help_next_${userId}`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(pageIndex === HELP_PAGE_ORDER.length - 1),
-  );
+/** Dropdown that lets the user jump directly to any category, instead of paging through prev/next. */
+function buildHelpSelectRow(currentKey, userId) {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`help_select_${userId}`)
+    .setPlaceholder('📂 Choose a category to view...')
+    .addOptions(HELP_PAGE_ORDER.map((key) => {
+      const cat = HELP_CATEGORIES[key];
+      return new StringSelectMenuOptionBuilder()
+        .setLabel(cat.label.replace(/^\S+\s/, ''))
+        .setValue(key)
+        .setEmoji(cat.emoji)
+        .setDefault(key === currentKey);
+    }));
+  return new ActionRowBuilder().addComponents(menu);
 }
 
 async function handleHelp(interaction) {
-  let pageIndex = 0;
+  let currentKey = 'overview';
   const message = await interaction.reply({
-    embeds: [buildHelpEmbed(pageIndex, interaction.guild)],
-    components: [buildHelpRow(pageIndex, interaction.user.id)],
+    embeds: [buildHelpEmbed(currentKey, interaction.guild)],
+    components: [buildHelpSelectRow(currentKey, interaction.user.id)],
     fetchReply: true,
   });
 
   const collector = message.createMessageComponentCollector({
-    componentType: ComponentType.Button,
+    componentType: ComponentType.StringSelect,
     time: 120_000,
-    filter: (btn) => btn.user.id === interaction.user.id,
+    filter: (menu) => menu.user.id === interaction.user.id,
   });
 
-  collector.on('collect', async (btn) => {
-    if (btn.customId === `help_prev_${interaction.user.id}`) pageIndex = Math.max(0, pageIndex - 1);
-    if (btn.customId === `help_next_${interaction.user.id}`) pageIndex = Math.min(HELP_PAGE_ORDER.length - 1, pageIndex + 1);
-    await btn.update({ embeds: [buildHelpEmbed(pageIndex, interaction.guild)], components: [buildHelpRow(pageIndex, interaction.user.id)] });
+  collector.on('collect', async (menu) => {
+    currentKey = menu.values[0];
+    await menu.update({ embeds: [buildHelpEmbed(currentKey, interaction.guild)], components: [buildHelpSelectRow(currentKey, interaction.user.id)] });
   });
 
   collector.on('end', async () => {
-    const disabledRow = buildHelpRow(pageIndex, interaction.user.id);
-    disabledRow.components.forEach((c) => c.setDisabled(true));
+    const disabledRow = buildHelpSelectRow(currentKey, interaction.user.id);
+    disabledRow.components[0].setDisabled(true);
     await interaction.editReply({ components: [disabledRow] }).catch(() => {});
   });
 }
@@ -641,7 +696,7 @@ async function handleKick(interaction) {
         { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
         { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
         { name: '📝 Reason', value: `\`${reason}\``, inline: false },
-      ).setTimestamp().setFooter(brandFooter('Member Action')));
+      ).setTimestamp().setFooter(brandFooter('Member Action')), 'kick');
 
     await interaction.editReply({
       embeds: [new EmbedBuilder()
@@ -695,7 +750,7 @@ async function handleBan(interaction) {
         { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
         { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
         { name: '📝 Reason', value: `\`${reason}\``, inline: false },
-      ).setTimestamp().setFooter(brandFooter('Member Action')));
+      ).setTimestamp().setFooter(brandFooter('Member Action')), 'ban');
 
     await interaction.editReply({
       embeds: [new EmbedBuilder()
@@ -748,7 +803,7 @@ async function handleMute(interaction) {
         { name: '⏱️ Duration', value: `${minutes} minutes`, inline: true },
         { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
         { name: '📝 Reason', value: `\`${reason}\``, inline: false },
-      ).setTimestamp().setFooter(brandFooter('Member Action')));
+      ).setTimestamp().setFooter(brandFooter('Member Action')), 'mute');
 
     await interaction.reply({
       embeds: [new EmbedBuilder().setAuthor(brandAuthor())
@@ -786,7 +841,7 @@ async function handleUnmute(interaction) {
       .addFields(
         { name: 'Member', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
         { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
-      ).setTimestamp());
+      ).setTimestamp(), 'mute');
     await interaction.reply({ embeds: [successEmbed('Unmute Successful', `${targetUser.tag} has been unmuted.`)] });
   } catch (error) {
     console.error('Unmute error:', error);
@@ -816,7 +871,7 @@ async function handleWarn(interaction) {
       { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
       { name: 'Reason', value: reason, inline: false },
       { name: 'Total Warnings', value: `${total}`, inline: true },
-    ).setTimestamp());
+    ).setTimestamp(), 'warn');
 
   await interaction.reply({
     embeds: [warningEmbed('Warning Issued', `${targetUser} has been warned.`)
@@ -889,7 +944,7 @@ async function handleClearWarnings(interaction) {
       { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
       { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
       { name: 'Cleared', value: `${count}`, inline: true },
-    ).setTimestamp());
+    ).setTimestamp(), 'warn');
   await interaction.editReply({ embeds: [successEmbed('Warnings Cleared', `All ${count} warnings for **${targetUser.tag}** have been cleared.`)], components: [] });
 }
 
@@ -907,6 +962,13 @@ async function handleClear(interaction) {
   await interaction.deferReply();
   try {
     const deleted = await interaction.channel.bulkDelete(amount, true); // true = auto-skip messages >14 days old
+    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
+      .setTitle('🧹 Messages Cleared').setColor(THEME.info)
+      .addFields(
+        { name: 'Channel', value: `${interaction.channel}`, inline: true },
+        { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
+        { name: 'Deleted', value: `${deleted.size}`, inline: true },
+      ).setTimestamp(), 'purge');
     await interaction.editReply({ embeds: [successEmbed('Messages Deleted', `🧹 ${deleted.size} message(s) deleted${deleted.size < amount ? ' (some were older than 14 days and skipped)' : ''}.`)] });
   } catch (error) {
     console.error('Clear error:', error);
@@ -956,7 +1018,7 @@ async function handlePurge(interaction) {
       .addFields(
         { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
         { name: '📍 Channel', value: `${interaction.channel}`, inline: true },
-      ).setTimestamp().setFooter(brandFooter('Purge Action')));
+      ).setTimestamp().setFooter(brandFooter('Purge Action')), 'purge');
 
     await interaction.editReply({ embeds: [successEmbed('Purge Successful', summary)] });
   } catch (error) {
@@ -976,7 +1038,7 @@ async function handleLock(interaction) {
       .setAuthor(brandAuthor())
       .setTitle('🔒 Channel Locked').setColor(THEME.error)
       .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${moderator.user.tag}`, inline: true })
-      .setTimestamp());
+      .setTimestamp(), 'lock');
 
     const unlockRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('quick_unlock').setLabel('Unlock').setEmoji('🔓').setStyle(ButtonStyle.Success),
@@ -989,6 +1051,10 @@ async function handleLock(interaction) {
           return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
         }
         await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null });
+        await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
+          .setTitle('🔓 Channel Unlocked').setColor(THEME.success)
+          .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${btn.user.tag}`, inline: true })
+          .setTimestamp(), 'lock');
         await btn.update({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.')], components: [] });
       })
       .catch(() => interaction.editReply({ components: [] }).catch(() => {}));
@@ -1009,7 +1075,7 @@ async function handleUnlock(interaction) {
       .setAuthor(brandAuthor())
       .setTitle('🔓 Channel Unlocked').setColor(THEME.success)
       .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${moderator.user.tag}`, inline: true })
-      .setTimestamp());
+      .setTimestamp(), 'lock');
 
     const lockRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('quick_lock').setLabel('Lock').setEmoji('🔒').setStyle(ButtonStyle.Danger),
@@ -1022,6 +1088,10 @@ async function handleUnlock(interaction) {
           return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
         }
         await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
+        await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
+          .setTitle('🔒 Channel Locked').setColor(THEME.error)
+          .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${btn.user.tag}`, inline: true })
+          .setTimestamp(), 'lock');
         await btn.update({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.')], components: [] });
       })
       .catch(() => interaction.editReply({ components: [] }).catch(() => {}));
@@ -1082,15 +1152,46 @@ async function handleFilter(interaction) {
 }
 
 async function handleSetLog(interaction) {
-  const channel = interaction.options.getChannel('channel');
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
     return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
   }
+  const channel = interaction.options.getChannel('channel');
+  const action = interaction.options.getString('action') || 'general';
   if (!channel.isTextBased()) {
     return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.')], ephemeral: true });
   }
-  logChannels[interaction.guildId] = channel.id;
-  await interaction.reply({ embeds: [successEmbed('Log Channel Set', `📋 Moderation logs will now be sent to ${channel}.`)] });
+  if (!logChannels[interaction.guildId]) logChannels[interaction.guildId] = {};
+  logChannels[interaction.guildId][action] = channel.id;
+
+  const meta = LOG_ACTIONS[action] || LOG_ACTIONS.general;
+  await interaction.reply({ embeds: [successEmbed('Log Channel Set', `📋 **${meta.emoji} ${meta.label}** logs will now be sent to ${channel}.`)] });
+}
+
+async function handleRemoveLog(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+  }
+  const action = interaction.options.getString('action');
+  const guildConfig = logChannels[interaction.guildId];
+  if (!guildConfig || !guildConfig[action]) {
+    return interaction.reply({ embeds: [infoEmbed('Nothing to Remove', `No specific log channel is set for **${LOG_ACTIONS[action]?.label || action}**. It's already falling back to general.`)], ephemeral: true });
+  }
+  delete guildConfig[action];
+  const meta = LOG_ACTIONS[action] || LOG_ACTIONS.general;
+  await interaction.reply({ embeds: [successEmbed('Log Channel Removed', `**${meta.emoji} ${meta.label}** logs will now fall back to the general log channel (if set).`)] });
+}
+
+async function handleLogs(interaction) {
+  const guildConfig = logChannels[interaction.guildId] || {};
+  const lines = Object.entries(LOG_ACTIONS).map(([key, meta]) => {
+    const channelId = guildConfig[key];
+    const value = channelId ? `<#${channelId}>` : (key === 'general' ? '*Not set*' : '*Falls back to general*');
+    return `${meta.emoji} **${meta.label}** — ${value}`;
+  });
+
+  await interaction.reply({
+    embeds: [infoEmbed('📋 Log Channel Configuration', lines.join('\n'))],
+  });
 }
 
 async function handleSetAutoRole(interaction) {
@@ -1204,6 +1305,8 @@ client.on('interactionCreate', async (interaction) => {
       case 'antiping': await handleAntiPing(interaction); break;
       case 'filter': await handleFilter(interaction); break;
       case 'setlog': await handleSetLog(interaction); break;
+      case 'removelog': await handleRemoveLog(interaction); break;
+      case 'logs': await handleLogs(interaction); break;
       case 'setwelcome': await handleSetWelcome(interaction); break;
       case 'setautorole': await handleSetAutoRole(interaction); break;
       case 'welcome': await handleWelcomeToggle(interaction); break;
@@ -1255,6 +1358,13 @@ client.on('guildMemberAdd', async (member) => {
         await channel.send({ embeds: [welcomeEmbed] }).catch(err => console.error('Welcome message error:', err));
       }
     }
+
+    await sendLog(member.guild, new EmbedBuilder().setAuthor(brandAuthor())
+      .setTitle('📥 Member Joined').setColor(THEME.success).setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+      .addFields(
+        { name: 'Member', value: `${member.user.tag} (${member.user.id})`, inline: false },
+        { name: 'Account Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
+      ).setTimestamp(), 'member');
   } catch (error) {
     console.error('Guild member add error:', error);
   }
@@ -1267,7 +1377,7 @@ client.on('guildMemberRemove', async (member) => {
       .addFields(
         { name: 'Member', value: `${member.user.tag} (${member.user.id})`, inline: false },
         { name: 'Joined Server', value: member.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>` : 'Unknown', inline: true },
-      ).setTimestamp());
+      ).setTimestamp(), 'member');
   } catch (error) {
     console.error('Guild member remove error:', error);
   }
@@ -1311,6 +1421,12 @@ client.on('messageCreate', async (message) => {
       try {
         await message.delete();
         const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Mention Not Allowed', "You can't use @everyone, @here, or mention members/roles here.")] });
+        await sendLog(message.guild, new EmbedBuilder().setAuthor(brandAuthor())
+          .setTitle('🛡️ Anti-Ping Triggered').setColor(THEME.warning)
+          .addFields(
+            { name: 'User', value: `${message.author.tag} (${message.author.id})`, inline: false },
+            { name: 'Channel', value: `${message.channel}`, inline: true },
+          ).setTimestamp(), 'antiping');
         setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
       } catch (error) {
         console.error('Anti-ping error:', error);
@@ -1345,7 +1461,7 @@ client.on('messageCreate', async (message) => {
             { name: 'User', value: `${message.author.tag} (${message.author.id})`, inline: false },
             { name: 'Channel', value: `${message.channel}`, inline: true },
             { name: 'Content', value: message.content.substring(0, 100), inline: false },
-          ).setTimestamp());
+          ).setTimestamp(), 'antiping');
         setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
       } catch (error) {
         console.error('Invite filter error:', error);
@@ -1374,7 +1490,7 @@ client.on('messageDelete', async (message) => {
         { name: 'Author', value: `${message.author.tag} (${message.author.id})`, inline: false },
         { name: 'Channel', value: `${message.channel}`, inline: true },
         { name: 'Content', value: (message.content || '').substring(0, 100) || 'No content', inline: false },
-      ).setTimestamp());
+      ).setTimestamp(), 'message');
   } catch (error) {
     console.error('Message delete error:', error);
   }
@@ -1392,7 +1508,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
         { name: 'Channel', value: `${oldMessage.channel}`, inline: true },
         { name: 'Before', value: (oldMessage.content || '').substring(0, 100) || 'No content', inline: false },
         { name: 'After', value: (newMessage.content || '').substring(0, 100) || 'No content', inline: false },
-      ).setTimestamp());
+      ).setTimestamp(), 'message');
   } catch (error) {
     console.error('Message update error:', error);
   }
