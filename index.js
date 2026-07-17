@@ -69,6 +69,7 @@ const welcomeEnabled = {};  // guildId -> boolean
 const welcomeMessages = {}; // guildId -> template string
 const userLevels = {};      // guildId -> userId -> { xp, lastMessage }
 const snipedMessages = {};  // guildId -> channelId -> { content, authorTag, authorAvatar, timestamp }
+const levelSystemEnabled = {}; // guildId -> boolean (default true) — whether XP/level-ups are tracked
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
 
@@ -252,6 +253,14 @@ async function registerCommands() {
       options: [{ name: 'user', description: 'User to check', type: 6, required: false }],
     },
     { name: 'leaderboard', description: 'Show the top 10 members by XP in this server' },
+    {
+      name: 'levelsystem',
+      description: 'Admin: enable or disable the XP/level system in this server',
+      options: [{
+        name: 'state', description: 'Enable or disable', type: 3, required: true,
+        choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }],
+      }],
+    },
     {
       name: 'userinfo',
       description: 'Get information about a user',
@@ -462,7 +471,7 @@ const HELP_CATEGORIES = {
   community: {
     label: '🎮 Community',
     emoji: '🎮',
-    commands: ['`/rank [user]` — Rank card', '`/level [user]` — XP & level card', '`/leaderboard` — Top 10 by XP', '`/welcomemessage` — Preview welcome text'],
+    commands: ['`/rank [user]` — Rank card', '`/level [user]` — XP & level card', '`/leaderboard` — Top 10 by XP', '`/levelsystem on|off` — Admin: enable/disable XP tracking', '`/welcomemessage` — Preview welcome text'],
   },
 };
 const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utility', 'community'];
@@ -583,6 +592,17 @@ async function handleLevel(interaction) {
     .setFooter(brandFooter('Level System'));
 
   await interaction.reply({ embeds: [levelEmbed] });
+}
+
+async function handleLevelSystemToggle(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+  }
+  const state = interaction.options.getString('state');
+  levelSystemEnabled[interaction.guildId] = state === 'on';
+  await interaction.reply({
+    embeds: [successEmbed('Level System', `The XP/level system is now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}** in this server.${state === 'off' ? '\nMembers will stop earning XP and level-up announcements will stop. Existing XP/levels are kept, not wiped.' : ''}`)],
+  });
 }
 
 async function handleLeaderboard(interaction) {
@@ -1396,6 +1416,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'level': await handleLevel(interaction); break;
       case 'rank': await handleLevel(interaction); break;
       case 'leaderboard': await handleLeaderboard(interaction); break;
+      case 'levelsystem': await handleLevelSystemToggle(interaction); break;
       case 'userinfo': await handleUserInfo(interaction); break;
       case 'serverinfo': await handleServerInfo(interaction); break;
       case 'avatar': await handleAvatar(interaction); break;
@@ -1503,7 +1524,7 @@ client.on('messageCreate', async (message) => {
     if (member && isAdmin(member)) return;
 
     // ---- XP / Level System ----
-    if (member) {
+    if (member && levelSystemEnabled[guildId] !== false) {
       const levelData = getUserLevelData(guildId, message.author.id);
       const now = Date.now();
       if (now - levelData.lastMessage >= 60000) {
@@ -1635,6 +1656,7 @@ client.on('guildDelete', (guild) => {
   delete welcomeMessages[guild.id];
   delete userLevels[guild.id];
   delete snipedMessages[guild.id];
+  delete levelSystemEnabled[guild.id];
   console.log(`Cleaned up in-memory data for guild ${guild.id} (${guild.name || 'unknown'})`);
 });
 
