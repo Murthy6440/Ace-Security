@@ -201,7 +201,7 @@ async function confirmAction(interaction, { title, description }) {
   const embed = new EmbedBuilder()
     .setAuthor(brandAuthor())
     .setTitle(`⚠️ ${title}`)
-    .setDescription(`${description}\n${DIVIDER}\n*This action cannot be undone.*`)
+    .setDescription(`${description}\n\n${DIVIDER}\n\n*This action cannot be undone.*`)
     .setColor(THEME.warning)
     .setTimestamp();
 
@@ -486,16 +486,16 @@ function buildHelpEmbed(pageKey, guild) {
   if (pageKey === 'overview') {
     const summaryLines = HELP_PAGE_ORDER.slice(1)
       .map((k) => `${HELP_CATEGORIES[k].label} — **${HELP_CATEGORIES[k].commands.length}** Commands`)
-      .join('\n');
+      .join('\n\n');
     embed
       .setTitle('👑 Z++ Security Bot — Command Directory')
-      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n${DIVIDER}\nUse the dropdown below to jump straight to a category.`)
+      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category.`)
       .addFields({ name: '📊 Categories', value: summaryLines, inline: false });
   } else {
     const cat = HELP_CATEGORIES[pageKey];
     embed
       .setTitle(cat.label)
-      .setDescription(`${DIVIDER}\n${cat.commands.join('\n')}`);
+      .setDescription(`${DIVIDER}\n\n${cat.commands.join('\n\n')}`);
   }
   return embed;
 }
@@ -556,7 +556,7 @@ async function handleSnipe(interaction) {
       { name: 'Author', value: sniped.authorTag, inline: true },
       { name: 'Channel', value: `${interaction.channel}`, inline: true },
     )
-    .setDescription(`${DIVIDER}\n${sniped.content || '*No text content*'}`)
+    .setDescription(`${DIVIDER}\n\n${sniped.content || '*No text content*'}`)
     .setThumbnail(sniped.authorAvatar)
     .setTimestamp(sniped.timestamp)
     .setFooter(brandFooter('Deleted Message'));
@@ -601,7 +601,7 @@ async function handleLevelSystemToggle(interaction) {
   const state = interaction.options.getString('state');
   levelSystemEnabled[interaction.guildId] = state === 'on';
   await interaction.reply({
-    embeds: [successEmbed('Level System', `The XP/level system is now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}** in this server.${state === 'off' ? '\nMembers will stop earning XP and level-up announcements will stop. Existing XP/levels are kept, not wiped.' : ''}`)],
+    embeds: [successEmbed('Level System', `The XP/level system is now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}** in this server.${state === 'off' ? '\n\nMembers will stop earning XP and level-up announcements will stop. Existing XP/levels are kept, not wiped.' : ''}`)],
   });
 }
 
@@ -624,7 +624,7 @@ async function handleLeaderboard(interaction) {
   const leaderboardEmbed = new EmbedBuilder().setAuthor(brandAuthor())
     .setTitle(`📊 ${interaction.guild.name} Leaderboard`)
     .setColor(THEME.level)
-    .setDescription(lines.join('\n'))
+    .setDescription(lines.join('\n\n'))
     .setThumbnail(interaction.guild.iconURL({ size: 256 }))
     .setTimestamp()
     .setFooter(brandFooter('Top 10 by XP'));
@@ -681,7 +681,7 @@ async function handleServerInfo(interaction) {
       { name: '👥 Members', value: `${guild.memberCount}`, inline: true },
       { name: '🤖 Bots', value: `${botCount}`, inline: true },
       { name: '💬 Boost Tier', value: `Level ${guild.premiumTier} (${guild.premiumSubscriptionCount || 0} boosts)`, inline: true },
-      { name: '📊 Channels', value: `**Text:** ${guild.channels.cache.filter(c => c.isTextBased()).size}\n**Voice:** ${guild.channels.cache.filter(c => c.isVoiceBased()).size}`, inline: true },
+      { name: '📊 Channels', value: `**Text:** ${guild.channels.cache.filter(c => c.isTextBased()).size}\n\n**Voice:** ${guild.channels.cache.filter(c => c.isVoiceBased()).size}`, inline: true },
       { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true },
     )
     .setTimestamp()
@@ -1053,9 +1053,9 @@ async function handlePurge(interaction) {
       deletedCount = results.filter(Boolean).length;
     }
 
-    let summary = `**Scanned:** ${amount}\n**Deleted:** ${deletedCount}`;
-    if (filterUser) summary += `\n**By User:** ${filterUser.tag}`;
-    if (filterText) summary += `\n**Contains:** \`${filterText}\``;
+    let summary = `**Scanned:** ${amount}\n\n**Deleted:** ${deletedCount}`;
+    if (filterUser) summary += `\n\n**By User:** ${filterUser.tag}`;
+    if (filterText) summary += `\n\n**Contains:** \`${filterText}\``;
 
     await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🧹 Messages Purged').setColor(THEME.info).setDescription(summary)
@@ -1210,7 +1210,7 @@ async function handleFilter(interaction) {
       return interaction.reply({ embeds: [warningEmbed('Already Blocked', requested.length === 1 ? `"${requested[0]}" is already filtered.` : `All ${requested.length} word(s) were already filtered.`)], ephemeral: true });
     }
 
-    const embed = successEmbed('Added to Filter', `🚫 Blocked **${added.length}** new word(s).\n**Total blocked:** ${chatFilters[guildId].length}`);
+    const embed = successEmbed('Added to Filter', `🚫 Blocked **${added.length}** new word(s).\n\n**Total blocked:** ${chatFilters[guildId].length}`);
     formatWordChunks(added).forEach((chunk, i) => embed.addFields({ name: i === 0 ? 'Added' : '\u200b', value: chunk, inline: false }));
     if (alreadyBlocked.length > 0) {
       embed.addFields({ name: `Skipped (already blocked) — ${alreadyBlocked.length}`, value: formatWordChunks(alreadyBlocked)[0] || 'None', inline: false });
@@ -1237,7 +1237,7 @@ async function handleFilter(interaction) {
       return interaction.reply({ embeds: [errorEmbed('Not Found', requested.length === 1 ? `"${requested[0]}" isn't in the filter.` : `None of those ${requested.length} word(s) were in the filter.`)], ephemeral: true });
     }
 
-    const embed = successEmbed('Removed from Filter', `**${removed.length}** word(s) removed.\n**Total blocked:** ${chatFilters[guildId].length}`);
+    const embed = successEmbed('Removed from Filter', `**${removed.length}** word(s) removed.\n\n**Total blocked:** ${chatFilters[guildId].length}`);
     formatWordChunks(removed).forEach((chunk, i) => embed.addFields({ name: i === 0 ? 'Removed' : '\u200b', value: chunk, inline: false }));
     if (notFound.length > 0) {
       embed.addFields({ name: `Skipped (not found) — ${notFound.length}`, value: formatWordChunks(notFound)[0] || 'None', inline: false });
@@ -1268,7 +1268,7 @@ async function handleFilter(interaction) {
     const merged = Array.from(new Set([...chatFilters[guildId], ...DEFAULT_FILTER_WORDS]));
     chatFilters[guildId] = merged;
     return interaction.reply({
-      embeds: [successEmbed('Default Filter Loaded', `🚫 Loaded a basic starter wordlist (English, Hindi, and Hinglish profanity).\n**Total blocked:** ${merged.length}\n\nUse \`/filter list\` to review it, or \`/filter add\`/\`/filter remove\` to fine-tune it.`)],
+      embeds: [successEmbed('Default Filter Loaded', `🚫 Loaded a basic starter wordlist (English, Hindi, and Hinglish profanity).\n\n**Total blocked:** ${merged.length}\n\nUse \`/filter list\` to review it, or \`/filter add\`/\`/filter remove\` to fine-tune it.`)],
     });
   }
 
@@ -1318,7 +1318,7 @@ async function handleLogs(interaction) {
   });
 
   await interaction.reply({
-    embeds: [infoEmbed('📋 Log Channel Configuration', lines.join('\n'))],
+    embeds: [infoEmbed('📋 Log Channel Configuration', lines.join('\n\n'))],
   });
 }
 
