@@ -26,74 +26,57 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
   ],
-  // Needed so messageDelete/messageUpdate don't crash on messages discord.js
-  // never had cached (they arrive as "partial" objects instead of being dropped).
   partials: [Partials.Message, Partials.Channel, Partials.GuildMember],
 });
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const KICK_CLIENT_ID = process.env.KICK_CLIENT_ID;
+const KICK_CLIENT_SECRET = process.env.KICK_CLIENT_SECRET;
 
 // ==================== UI THEME ====================
-// A single shared palette so every embed feels like part of one product
-// instead of each command inventing its own colors ad hoc.
 const THEME = {
-  success: 0x2ecc71, // #2ECC71
-  error: 0xe74c3c,    // #E74C3C
-  warning: 0xf1c40f,  // #F1C40F
-  info: 0x3498db,     // #3498DB
-  primary: 0x7289da,  // #7289DA
-  danger: 0xe74c3c,   // #E74C3C
-  mute: 0xf1c40f,     // #F1C40F
-  level: 0x7289da,    // #7289DA (rank card accent)
+  success: 0x2ecc71,
+  error: 0xe74c3c,
+  warning: 0xf1c40f,
+  info: 0x3498db,
+  primary: 0x7289da,
+  danger: 0xe74c3c,
+  mute: 0xf1c40f,
+  level: 0x7289da,
+  kick: 0x53fc18,
 };
 const BRAND_NAME = 'Z++ Security';
 const FOOTER_ICON = 'https://cdn.discordapp.com/emojis/879640511815659570.gif';
 const brandFooter = (text) => ({ text: `${BRAND_NAME} • ${text}`, iconURL: FOOTER_ICON });
-/** Consistent "product" header — bot avatar + brand name — on top of every embed. */
 const brandAuthor = () => ({ name: `${BRAND_NAME} 🛡️`, iconURL: client.user?.displayAvatarURL() || FOOTER_ICON });
-/** Thin unicode rule used to separate sections inside longer embeds. */
 const DIVIDER = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
 
 // ==================== DATA STORAGE ====================
-// In-memory, keyed by guildId so nothing leaks between servers. A restart
-// wipes all of it — swapping to a real database is out of scope here.
-const warnings = {};        // guildId -> { userId -> Array<{ mod, reason, timestamp }> }
-const antiPing = {};        // guildId -> boolean
-const chatFilters = {};     // guildId -> Array<string>
-// guildId -> { general?: channelId, <logAction>?: channelId, ... } — per-action log routing.
+const warnings = {};
+const antiPing = {};
+const chatFilters = {};
 const logChannels = {};
-const welcomeChannels = {}; // guildId -> channelId
-const autoRoles = {};       // guildId -> roleId
-const welcomeEnabled = {};  // guildId -> boolean
-const welcomeMessages = {}; // guildId -> template string
-const userLevels = {};      // guildId -> userId -> { xp, lastMessage }
-const snipedMessages = {};  // guildId -> channelId -> { content, authorTag, authorAvatar, timestamp }
-const levelSystemEnabled = {}; // guildId -> boolean (default true) — whether XP/level-ups are tracked
+const welcomeChannels = {};
+const autoRoles = {};
+const welcomeEnabled = {};
+const welcomeMessages = {};
+const userLevels = {};
+const snipedMessages = {};
+const levelSystemEnabled = {};
+const kickAnnouncements = {}; // guildId -> { kickUsername, channelId, roleId, isLive, lastSessionId }
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
 
-// ==================== DEFAULT CHAT FILTER WORDLIST ====================
-// A basic starter set of common profanity — English, Hindi (Devanagari), and
-// Hinglish (romanized Hindi) — so a server has a working filter out of the
-// box via `/filter reset` instead of starting from an empty list. This is
-// intentionally a mild/common-profanity baseline, not an exhaustive slur
-// list; admins should layer on `/filter add` for anything server-specific.
 const DEFAULT_FILTER_WORDS = [
-  // English
   'fuck', 'fucker', 'fucking', 'shit', 'bullshit', 'bitch', 'asshole', 'bastard',
   'dick', 'piss', 'cunt', 'whore', 'slut', 'douchebag', 'motherfucker',
-  // Hindi (Devanagari script)
   'चूतिया', 'भोसड़ी', 'मादरचोद', 'बहनचोद', 'रंडी', 'गांडू', 'लौड़ा', 'साला', 'कमीना', 'हरामी',
-  // Hinglish (romanized Hindi)
   'chutiya', 'chutiye', 'bhosdi', 'bhosdike', 'bhosadi', 'madarchod', 'mc', 'bc',
   'bhenchod', 'behenchod', 'randi', 'gandu', 'gaandu', 'lauda', 'lund', 'loda',
   'saala kutta', 'kamina', 'kamine', 'harami', 'chodu', 'chinal', 'raand', 'suar',
 ];
 
-// ==================== LOG ACTION TYPES ====================
-// Every distinct kind of event that can be routed to its own log channel.
-// "general" is the fallback used when a specific action has no channel set.
 const LOG_ACTIONS = {
   general: { label: 'General (fallback for everything else)', emoji: '📋' },
   ban: { label: 'Bans', emoji: '🔨' },
@@ -108,7 +91,6 @@ const LOG_ACTIONS = {
 };
 const LOG_ACTION_CHOICES = Object.entries(LOG_ACTIONS).map(([value, meta]) => ({ name: `${meta.emoji} ${meta.label}`, value }));
 
-/** Resolves which channel a given log action should post to, falling back to "general". */
 async function sendLog(guild, embed, action = 'general') {
   const guildConfig = logChannels[guild.id];
   if (!guildConfig) return;
@@ -138,15 +120,94 @@ function getLevelFromXp(xp) {
 function getXpForLevel(level) {
   return level * level * 100;
 }
-/**
- * Renders a little block-character progress bar, e.g. ██████░░░░ 62%
- * Used to make /level and level-up announcements feel like an actual game
- * UI instead of a plain number.
- */
 function progressBar(current, total, size = 12) {
   const pct = total > 0 ? Math.min(1, Math.max(0, current / total)) : 0;
   const filled = Math.round(size * pct);
   return `${'█'.repeat(filled)}${'░'.repeat(size - filled)} ${Math.round(pct * 100)}%`;
+}
+
+// ==================== KICK LIVE ANNOUNCEMENT HELPERS ====================
+const KICK_POLL_INTERVAL_MS = 3 * 60 * 1000; // conservative — avoid hammering Kick's API
+let kickAppToken = null;
+let kickAppTokenExpiresAt = 0;
+
+/** Fetches (and caches) a Kick app access token via the client-credentials grant. */
+async function getKickAppToken() {
+  if (kickAppToken && Date.now() < kickAppTokenExpiresAt - 30_000) {
+    return kickAppToken;
+  }
+  if (!KICK_CLIENT_ID || !KICK_CLIENT_SECRET) {
+    throw new Error('KICK_CLIENT_ID / KICK_CLIENT_SECRET not configured');
+  }
+  const res = await fetch('https://id.kick.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: KICK_CLIENT_ID,
+      client_secret: KICK_CLIENT_SECRET,
+    }),
+  });
+  if (!res.ok) throw new Error(`Kick token request failed: ${res.status}`);
+  const data = await res.json();
+  kickAppToken = data.access_token;
+  kickAppTokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+  return kickAppToken;
+}
+
+/** Looks up a public Kick channel (and its livestream, if any) by slug/username. */
+async function fetchKickChannel(slug) {
+  const token = await getKickAppToken();
+  const res = await fetch(`https://api.kick.com/public/v1/channels?slug=${encodeURIComponent(slug)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Kick API returned ${res.status}`);
+  const body = await res.json();
+  const channel = body?.data?.[0];
+  if (!channel) throw new Error('Channel not found');
+  return channel;
+}
+
+function buildKickLiveEmbed(slug, channel) {
+  const stream = channel.stream;
+  return new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setTitle(`🔴 ${channel.slug || slug} is now LIVE on Kick!`)
+    .setURL(`https://kick.com/${slug}`)
+    .setDescription(`**${channel.stream_title || 'No title set'}**\n\n${DIVIDER}\n\n🎮 **Category:** ${channel.category?.name || 'N/A'}\n👀 **Viewers:** ${stream?.viewer_count ?? 'N/A'}`)
+    .setColor(THEME.kick)
+    .setImage(stream?.thumbnail || null)
+    .setThumbnail(channel.banner_picture || null)
+    .setTimestamp()
+    .setFooter(brandFooter('Kick Live Announcement'));
+}
+
+/** Polls every configured guild's tracked Kick channel and announces new live sessions. */
+async function pollKickStreams() {
+  for (const [guildId, config] of Object.entries(kickAnnouncements)) {
+    if (!config?.kickUsername || !config?.channelId) continue;
+    try {
+      const channelData = await fetchKickChannel(config.kickUsername);
+      const isLiveNow = !!channelData.stream?.is_live;
+      const sessionKey = channelData.stream?.start_time || null;
+
+      if (isLiveNow && (!config.isLive || config.lastSessionId !== sessionKey)) {
+        const guild = await client.guilds.fetch(guildId).catch(() => null);
+        if (!guild) continue;
+        const channel = await guild.channels.fetch(config.channelId).catch(() => null);
+        if (channel?.isTextBased()) {
+          const content = config.roleId ? `<@&${config.roleId}>` : undefined;
+          await channel.send({ content, embeds: [buildKickLiveEmbed(config.kickUsername, channelData)] }).catch(err => console.error('Kick announce send error:', err));
+        }
+        config.isLive = true;
+        config.lastSessionId = sessionKey;
+      } else if (!isLiveNow) {
+        config.isLive = false;
+      }
+    } catch (error) {
+      console.error(`Kick poll error for ${config.kickUsername}:`, error.message);
+    }
+  }
 }
 
 // ==================== HELPER FUNCTIONS ====================
@@ -161,7 +222,6 @@ function canModerate(moderator, target) {
   if (target.id === moderator.id) return false;
   return moderator.roles.highest.position > target.roles.highest.position;
 }
-/** Can the bot itself act on this target, based on the bot's own role position? */
 function canBotModerate(guild, target) {
   const me = guild.members.me;
   if (!me) return false;
@@ -188,11 +248,6 @@ async function safeInteractionReply(interaction, response) {
   return interaction.reply(response);
 }
 
-/**
- * Shows a warning embed with Confirm/Cancel buttons and waits for the
- * original invoker to click one. Resolves to true (confirmed), false
- * (cancelled), or null (timed out) — the caller decides what to do next.
- */
 async function confirmAction(interaction, { title, description }) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('confirm').setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Danger),
@@ -225,7 +280,6 @@ function hasInvite(content) {
   const inviteRegex = /(https?:\/\/)?(www\.)?(discord\.gg|discordapp\.com\/invite|discord\.com\/invite)\/[^\s]+/gi;
   return inviteRegex.test(content);
 }
-/** Correctly detects @everyone/@here/member/role mentions for anti-ping. */
 function hasMentions(message) {
   return message.mentions.everyone || message.mentions.members.size > 0 || message.mentions.roles.size > 0;
 }
@@ -408,10 +462,21 @@ async function registerCommands() {
     },
     { name: 'welcomemessage', description: 'Preview the current welcome message' },
     { name: 'snipe', description: 'View the last deleted message in this channel' },
+    {
+      name: 'setkickchannel',
+      description: 'Announce when a Kick.com streamer goes live',
+      options: [
+        { name: 'kickuser', description: 'Kick.com username (from kick.com/username)', type: 3, required: true },
+        { name: 'channel', description: 'Channel to post the announcement in', type: 7, required: true },
+        { name: 'role', description: 'Optional role to ping when they go live', type: 8, required: false },
+      ],
+    },
+    { name: 'removekickchannel', description: 'Stop Kick live announcements in this server' },
+    { name: 'kickstatus', description: 'Check the current Kick announcement configuration' },
   ];
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
-  const GUILD_ID = process.env.GUILD_ID; // optional — instant sync to one server while testing
+  const GUILD_ID = process.env.GUILD_ID;
 
   try {
     console.log('Starting to register slash commands...');
@@ -473,8 +538,13 @@ const HELP_CATEGORIES = {
     emoji: '🎮',
     commands: ['`/rank [user]` — Rank card', '`/level [user]` — XP & level card', '`/leaderboard` — Top 10 by XP', '`/levelsystem on|off` — Admin: enable/disable XP tracking', '`/welcomemessage` — Preview welcome text'],
   },
+  streaming: {
+    label: '📺 Streaming',
+    emoji: '📺',
+    commands: ['`/setkickchannel <kickuser> <channel> [role]` — Admin: announce when a Kick streamer goes live', '`/removekickchannel` — Admin: stop Kick announcements', '`/kickstatus` — View current Kick announcement config'],
+  },
 };
-const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utility', 'community'];
+const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utility', 'community', 'streaming'];
 
 function buildHelpEmbed(pageKey, guild) {
   const embed = new EmbedBuilder()
@@ -500,7 +570,6 @@ function buildHelpEmbed(pageKey, guild) {
   return embed;
 }
 
-/** Dropdown that lets the user jump directly to any category, instead of paging through prev/next. */
 function buildHelpSelectRow(currentKey, userId) {
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`help_select_${userId}`)
@@ -574,7 +643,6 @@ async function handleLevel(interaction) {
   const xpIntoLevel = data.xp - currentLevelXp;
   const xpNeeded = nextLevelXp - currentLevelXp;
 
-  // Compute this user's rank among everyone tracked in this guild.
   const sorted = Object.entries(userLevels[guildId] || {}).sort((a, b) => b[1].xp - a[1].xp);
   const rank = sorted.findIndex(([id]) => id === targetUser.id) + 1;
 
@@ -821,7 +889,7 @@ async function handleMute(interaction) {
   if (!moderator.permissions.has(PermissionFlagsBits.ModerateMembers)) {
     return interaction.reply({ embeds: [errorEmbed('Permission Denied', '🔒 You need **Moderate Members** permission to use this command.')], ephemeral: true });
   }
-  const MAX_MINUTES = 40320; // Discord's 28-day timeout cap
+  const MAX_MINUTES = 40320;
   if (minutesInput < 1) {
     return interaction.reply({ embeds: [errorEmbed('Invalid Duration', 'Mute duration must be at least 1 minute.')], ephemeral: true });
   }
@@ -1005,7 +1073,7 @@ async function handleClear(interaction) {
 
   await interaction.deferReply();
   try {
-    const deleted = await interaction.channel.bulkDelete(amount, true); // true = auto-skip messages >14 days old
+    const deleted = await interaction.channel.bulkDelete(amount, true);
     await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
       .setTitle('🧹 Messages Cleared').setColor(THEME.info)
       .addFields(
@@ -1154,16 +1222,12 @@ async function handleAntiPing(interaction) {
   await interaction.reply({ embeds: [successEmbed(`Anti-Ping ${action === 'on' ? 'Enabled' : 'Disabled'}`, action === 'on' ? '🛡️ Mass pings and mentions will now be automatically removed.' : 'Anti-ping protection is now off.')] });
 }
 
-/** Splits a "word1, word2, word3" input into a clean, deduped, lowercased list. Commas are the
- * separator (not spaces) so multi-word phrases like "saala kutta" survive intact. */
 function parseWordList(input) {
   return Array.from(new Set(
     input.split(',').map(w => w.toLowerCase().trim()).filter(Boolean),
   ));
 }
 
-/** Chunks a list of words into `\`w1\`, \`w2\`, ...` lines capped at ~950 chars each,
- * so a big batch summary never exceeds Discord's 1024-char field value limit. */
 function formatWordChunks(words) {
   const chunks = [];
   let current = [];
@@ -1253,8 +1317,6 @@ async function handleFilter(interaction) {
       .setTitle('🚫 Blocked Words').setColor(THEME.error)
       .setFooter(brandFooter(`${chatFilters[guildId].length} word(s) blocked`)).setTimestamp();
 
-    // Chunk into ~20-word fields so a large (e.g. default) list doesn't blow
-    // past Discord's per-field/description character limits.
     const CHUNK_SIZE = 20;
     const words = chatFilters[guildId];
     for (let i = 0; i < words.length; i += CHUNK_SIZE) {
@@ -1391,19 +1453,84 @@ async function handleWelcomeMessagePreview(interaction) {
   });
 }
 
+// ==================== KICK ANNOUNCEMENT COMMAND HANDLERS ====================
+
+async function handleSetKickChannel(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+  }
+  const kickUsername = interaction.options.getString('kickuser').trim().toLowerCase();
+  const channel = interaction.options.getChannel('channel');
+  const role = interaction.options.getRole('role');
+  if (!channel.isTextBased()) {
+    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.')], ephemeral: true });
+  }
+
+  await interaction.deferReply();
+  try {
+    await fetchKickChannel(kickUsername); // validate the username actually exists before saving
+  } catch (error) {
+    console.error('Kick validation error:', error.message);
+    return interaction.editReply({ embeds: [errorEmbed('Kick User Not Found', `Could not find a Kick channel for \`${kickUsername}\`. Double-check the username from their URL (kick.com/**username**), and make sure \`KICK_CLIENT_ID\`/\`KICK_CLIENT_SECRET\` are set correctly.`)] });
+    return;
+  }
+
+  kickAnnouncements[interaction.guildId] = {
+    kickUsername,
+    channelId: channel.id,
+    roleId: role?.id || null,
+    isLive: false,
+    lastSessionId: null,
+  };
+
+  await interaction.editReply({
+    embeds: [successEmbed('Kick Announcements Set', `🟢 I'll post in ${channel} whenever **${kickUsername}** goes live on Kick.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 3 minutes.`)],
+  });
+}
+
+async function handleRemoveKickChannel(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+  }
+  if (!kickAnnouncements[interaction.guildId]) {
+    return interaction.reply({ embeds: [infoEmbed('Nothing to Remove', 'No Kick announcement is configured for this server.')], ephemeral: true });
+  }
+  delete kickAnnouncements[interaction.guildId];
+  await interaction.reply({ embeds: [successEmbed('Kick Announcements Removed', 'Live announcements have been turned off.')] });
+}
+
+async function handleKickStatus(interaction) {
+  const config = kickAnnouncements[interaction.guildId];
+  if (!config) {
+    return interaction.reply({ embeds: [infoEmbed('Kick Announcements', 'Not configured. Use `/setkickchannel` to set one up.')] });
+  }
+  await interaction.reply({
+    embeds: [infoEmbed('Kick Announcements', `**Watching:** [${config.kickUsername}](https://kick.com/${config.kickUsername})\n**Channel:** <#${config.channelId}>\n**Ping Role:** ${config.roleId ? `<@&${config.roleId}>` : 'None'}\n**Currently Live:** ${config.isLive ? '🟢 Yes' : '⚫ No'}`)],
+  });
+}
+
 // ==================== EVENT HANDLERS ====================
 
 client.once('ready', () => {
   console.log(`\n${'='.repeat(50)}\n🛡️ ${BRAND_NAME} Ready! ${client.user.tag}\nGuilds: ${client.guilds.cache.size}\n${'='.repeat(50)}\n`);
   client.user.setPresence({ activities: [{ name: '🛡️ your server | /help', type: ActivityType.Watching }], status: 'online' });
+
+  // Kick Live Announcements — poll immediately, then on an interval.
+  if (KICK_CLIENT_ID && KICK_CLIENT_SECRET) {
+    pollKickStreams().catch(err => console.error('Initial Kick poll error:', err));
+    setInterval(() => {
+      pollKickStreams().catch(err => console.error('Kick poll error:', err));
+    }, KICK_POLL_INTERVAL_MS);
+    console.log('📺 Kick live announcements: polling enabled.');
+  } else {
+    console.log('📺 Kick live announcements: KICK_CLIENT_ID/KICK_CLIENT_SECRET not set — feature disabled.');
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const command = interaction.commandName;
 
-  // Most commands need interaction.guild/.member — fail fast and clean in DMs
-  // instead of throwing a TypeError deep inside a handler.
   if (!interaction.inGuild() && !['ping', 'help'].includes(command)) {
     return interaction.reply({ embeds: [errorEmbed('Server Only', 'This command can only be used inside a server.')], ephemeral: true });
   }
@@ -1442,6 +1569,9 @@ client.on('interactionCreate', async (interaction) => {
       case 'setwelcomemessage': await handleSetWelcomeMessage(interaction); break;
       case 'welcomemessage': await handleWelcomeMessagePreview(interaction); break;
       case 'snipe': await handleSnipe(interaction); break;
+      case 'setkickchannel': await handleSetKickChannel(interaction); break;
+      case 'removekickchannel': await handleRemoveKickChannel(interaction); break;
+      case 'kickstatus': await handleKickStatus(interaction); break;
       default:
         await interaction.reply({ embeds: [errorEmbed('Unknown Command', "That command doesn't exist.")], ephemeral: true });
     }
@@ -1459,14 +1589,12 @@ client.on('guildMemberAdd', async (member) => {
   try {
     const guildId = member.guild.id;
 
-    // Auto role
     const autoRoleId = autoRoles[guildId];
     if (autoRoleId) {
       const role = await member.guild.roles.fetch(autoRoleId).catch(() => null);
       if (role) await member.roles.add(role).catch(err => console.error('Auto-role assignment error:', err));
     }
 
-    // Welcome message
     const isWelcomeEnabled = welcomeEnabled[guildId] !== false;
     const welcomeChannelId = welcomeChannels[guildId];
     if (isWelcomeEnabled && welcomeChannelId) {
@@ -1519,7 +1647,7 @@ client.on('messageCreate', async (message) => {
     if (message.partial) return;
 
     const guildId = message.guildId;
-    const member = message.member; // avoids an unnecessary members.fetch() REST call per message
+    const member = message.member;
 
     if (member && isAdmin(member)) return;
 
@@ -1643,8 +1771,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   }
 });
 
-// Clean up all in-memory data for a guild once the bot is removed from it,
-// to avoid an unbounded memory leak across many servers over time.
+// Clean up all in-memory data for a guild once the bot is removed from it.
 client.on('guildDelete', (guild) => {
   delete warnings[guild.id];
   delete antiPing[guild.id];
@@ -1657,6 +1784,7 @@ client.on('guildDelete', (guild) => {
   delete userLevels[guild.id];
   delete snipedMessages[guild.id];
   delete levelSystemEnabled[guild.id];
+  delete kickAnnouncements[guild.id];
   console.log(`Cleaned up in-memory data for guild ${guild.id} (${guild.name || 'unknown'})`);
 });
 
@@ -1664,8 +1792,6 @@ client.on('error', (error) => console.error('Discord.js error:', error));
 client.on('warn', (info) => console.warn('Discord.js warning:', info));
 process.on('unhandledRejection', (reason, promise) => console.error('Unhandled Rejection at:', promise, 'reason:', reason));
 process.on('uncaughtException', (error) => {
-  // Log, don't exit — killing the process on any single uncaught error would
-  // also take down the HTTP healthcheck server for no reason.
   console.error('Uncaught Exception:', error);
 });
 
@@ -1674,6 +1800,9 @@ async function start() {
   try {
     if (!TOKEN) { console.error('❌ DISCORD_TOKEN not found in .env'); process.exit(1); }
     if (!CLIENT_ID) { console.error('❌ CLIENT_ID not found in .env'); process.exit(1); }
+    if (!KICK_CLIENT_ID || !KICK_CLIENT_SECRET) {
+      console.warn('⚠️ KICK_CLIENT_ID / KICK_CLIENT_SECRET not set — Kick live announcements will be disabled.');
+    }
 
     const PORT = process.env.PORT || 3000;
     const server = http.createServer((req, res) => {
