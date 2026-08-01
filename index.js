@@ -64,9 +64,10 @@ const welcomeMessages = {};
 const userLevels = {};
 const snipedMessages = {};
 const levelSystemEnabled = {};
-const kickAnnouncements = {}; // guildId -> { kickUsername, channelId, roleId, isLive, lastSessionId }
+const kickAnnouncements = {}; // guildId -> { kickUsername, channelId, roleId, messageTemplate, isLive, lastSessionId }
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
+const DEFAULT_KICK_MESSAGE = '🔴 **{streamer}** just went live on Kick!';
 
 const DEFAULT_FILTER_WORDS = [
   'fuck', 'fucker', 'fucking', 'shit', 'bullshit', 'bitch', 'asshole', 'bastard',
@@ -168,6 +169,20 @@ async function fetchKickChannel(slug) {
   return channel;
 }
 
+/** Renders a Kick announcement message template, substituting {streamer} {url} {role}. */
+function renderKickMessage(template, { kickUsername, channelData, roleId }) {
+  const rendered = template
+    .replaceAll('{streamer}', channelData?.slug || kickUsername)
+    .replaceAll('{url}', `https://kick.com/${kickUsername}`)
+    .replaceAll('{role}', roleId ? `<@&${roleId}>` : '');
+
+  // If a role is configured but the template didn't reference {role}, ping it anyway.
+  if (roleId && !template.includes('{role}')) {
+    return `<@&${roleId}> ${rendered}`;
+  }
+  return rendered;
+}
+
 function buildKickLiveEmbed(slug, channel) {
   const stream = channel.stream;
   return new EmbedBuilder()
@@ -196,7 +211,8 @@ async function pollKickStreams() {
         if (!guild) continue;
         const channel = await guild.channels.fetch(config.channelId).catch(() => null);
         if (channel?.isTextBased()) {
-          const content = config.roleId ? `<@&${config.roleId}>` : undefined;
+          const template = config.messageTemplate || DEFAULT_KICK_MESSAGE;
+          const content = renderKickMessage(template, { kickUsername: config.kickUsername, channelData, roleId: config.roleId });
           await channel.send({ content, embeds: [buildKickLiveEmbed(config.kickUsername, channelData)] }).catch(err => console.error('Kick announce send error:', err));
         }
         config.isLive = true;
@@ -469,7 +485,13 @@ async function registerCommands() {
         { name: 'kickuser', description: 'Kick.com username (from kick.com/username)', type: 3, required: true },
         { name: 'channel', description: 'Channel to post the announcement in', type: 7, required: true },
         { name: 'role', description: 'Optional role to ping when they go live', type: 8, required: false },
+        { name: 'message', description: 'Custom message. Placeholders: {streamer} {url} {role}', type: 3, required: false, max_length: 500 },
       ],
+    },
+    {
+      name: 'setkickmessage',
+      description: 'Update just the custom Kick live announcement message',
+      options: [{ name: 'message', description: 'Custom message. Placeholders: {streamer} {url} {role}. Leave blank to reset to default.', type: 3, required: false, max_length: 500 }],
     },
     { name: 'removekickchannel', description: 'Stop Kick live announcements in this server' },
     { name: 'kickstatus', description: 'Check the current Kick announcement configuration' },
@@ -503,7 +525,7 @@ async function handlePing(interaction) {
     embeds: [
       new EmbedBuilder().setAuthor(brandAuthor())
         .setTitle('🏓 Pong!')
-        .setDescription(`**Latency:** \`${latency}ms\`\n**Status:** ${speedStatus}`)
+        .setDescription(`${DIVIDER}\n\n**Latency:** \`${latency}ms\`\n**Status:** ${speedStatus}\n**Uptime:** <t:${Math.floor((Date.now() - client.uptime) / 1000)}:R>`)
         .setColor(color)
         .setTimestamp()
         .setFooter(brandFooter('Performance Check')),
@@ -541,7 +563,13 @@ const HELP_CATEGORIES = {
   streaming: {
     label: '📺 Streaming',
     emoji: '📺',
-    commands: ['`/setkickchannel <kickuser> <channel> [role]` — Admin: announce when a Kick streamer goes live', '`/removekickchannel` — Admin: stop Kick announcements', '`/kickstatus` — View current Kick announcement config'],
+    commands: [
+      '`/setkickchannel <kickuser> <channel> [role] [message]` — Admin: announce when a Kick streamer goes live',
+      '`/setkickmessage [message]` — Admin: update just the announcement text',
+      '`/removekickchannel` — Admin: stop Kick announcements',
+      '`/kickstatus` — View current Kick announcement config',
+      '💬 Message placeholders: `{streamer}` `{url}` `{role}`',
+    ],
   },
 };
 const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utility', 'community', 'streaming'];
@@ -560,7 +588,8 @@ function buildHelpEmbed(pageKey, guild) {
     embed
       .setTitle('👑 Z++ Security Bot — Command Directory')
       .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category.`)
-      .addFields({ name: '📊 Categories', value: summaryLines, inline: false });
+      .addFields({ name: '📊 Categories', value: summaryLines, inline: false })
+      .setThumbnail(guild?.iconURL({ size: 256 }) || null);
   } else {
     const cat = HELP_CATEGORIES[pageKey];
     embed
@@ -1462,6 +1491,7 @@ async function handleSetKickChannel(interaction) {
   const kickUsername = interaction.options.getString('kickuser').trim().toLowerCase();
   const channel = interaction.options.getChannel('channel');
   const role = interaction.options.getRole('role');
+  const messageTemplate = interaction.options.getString('message')?.trim() || null;
   if (!channel.isTextBased()) {
     return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.')], ephemeral: true });
   }
@@ -1472,19 +1502,53 @@ async function handleSetKickChannel(interaction) {
   } catch (error) {
     console.error('Kick validation error:', error.message);
     return interaction.editReply({ embeds: [errorEmbed('Kick User Not Found', `Could not find a Kick channel for \`${kickUsername}\`. Double-check the username from their URL (kick.com/**username**), and make sure \`KICK_CLIENT_ID\`/\`KICK_CLIENT_SECRET\` are set correctly.`)] });
-    return;
   }
 
   kickAnnouncements[interaction.guildId] = {
     kickUsername,
     channelId: channel.id,
     roleId: role?.id || null,
+    messageTemplate,
     isLive: false,
     lastSessionId: null,
   };
 
-  await interaction.editReply({
-    embeds: [successEmbed('Kick Announcements Set', `🟢 I'll post in ${channel} whenever **${kickUsername}** goes live on Kick.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 3 minutes.`)],
+  const previewSource = messageTemplate || DEFAULT_KICK_MESSAGE;
+  const preview = renderKickMessage(previewSource, { kickUsername, channelData: { slug: kickUsername }, roleId: role?.id || null });
+
+  const confirmationEmbed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setTitle('✅ Kick Announcements Set')
+    .setColor(THEME.kick)
+    .setDescription(`${DIVIDER}\n\nI'll post here whenever **${kickUsername}** goes live on Kick.`)
+    .addFields(
+      { name: '📺 Streamer', value: `[kick.com/${kickUsername}](https://kick.com/${kickUsername})`, inline: true },
+      { name: '📍 Channel', value: `${channel}`, inline: true },
+      { name: '🔔 Ping Role', value: role ? `${role}` : 'None', inline: true },
+      { name: '💬 Message Preview', value: preview, inline: false },
+    )
+    .setTimestamp()
+    .setFooter(brandFooter('Checked roughly every 3 minutes'));
+
+  await interaction.editReply({ embeds: [confirmationEmbed] });
+}
+
+async function handleSetKickMessage(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+  }
+  const config = kickAnnouncements[interaction.guildId];
+  if (!config) {
+    return interaction.reply({ embeds: [errorEmbed('Not Configured', 'No Kick announcement is set up yet. Use `/setkickchannel` first.')], ephemeral: true });
+  }
+  const messageTemplate = interaction.options.getString('message')?.trim() || null;
+  config.messageTemplate = messageTemplate;
+
+  const previewSource = messageTemplate || DEFAULT_KICK_MESSAGE;
+  const preview = renderKickMessage(previewSource, { kickUsername: config.kickUsername, channelData: { slug: config.kickUsername }, roleId: config.roleId });
+
+  await interaction.reply({
+    embeds: [successEmbed('Kick Message Updated', `${messageTemplate ? 'Custom message saved.' : 'Reset to the default message.'}`).addFields({ name: '💬 New Preview', value: preview, inline: false })],
   });
 }
 
@@ -1502,11 +1566,29 @@ async function handleRemoveKickChannel(interaction) {
 async function handleKickStatus(interaction) {
   const config = kickAnnouncements[interaction.guildId];
   if (!config) {
-    return interaction.reply({ embeds: [infoEmbed('Kick Announcements', 'Not configured. Use `/setkickchannel` to set one up.')] });
+    return interaction.reply({ embeds: [infoEmbed('📺 Kick Announcements', 'Not configured yet.\n\nUse `/setkickchannel` to set one up.')] });
   }
-  await interaction.reply({
-    embeds: [infoEmbed('Kick Announcements', `**Watching:** [${config.kickUsername}](https://kick.com/${config.kickUsername})\n**Channel:** <#${config.channelId}>\n**Ping Role:** ${config.roleId ? `<@&${config.roleId}>` : 'None'}\n**Currently Live:** ${config.isLive ? '🟢 Yes' : '⚫ No'}`)],
-  });
+  const template = config.messageTemplate || DEFAULT_KICK_MESSAGE;
+  const preview = renderKickMessage(template, { kickUsername: config.kickUsername, channelData: { slug: config.kickUsername }, roleId: config.roleId });
+
+  const statusEmbed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setTitle('📺 Kick Announcement Config')
+    .setColor(config.isLive ? THEME.kick : THEME.info)
+    .setDescription(DIVIDER)
+    .addFields(
+      { name: 'Streamer', value: `[${config.kickUsername}](https://kick.com/${config.kickUsername})`, inline: true },
+      { name: 'Channel', value: `<#${config.channelId}>`, inline: true },
+      { name: 'Ping Role', value: config.roleId ? `<@&${config.roleId}>` : 'None', inline: true },
+      { name: 'Currently Live', value: config.isLive ? '🟢 Yes' : '⚫ No', inline: true },
+      { name: 'Custom Message', value: config.messageTemplate ? '✅ Set' : '➖ Using default', inline: true },
+      { name: '\u200b', value: '\u200b', inline: true },
+      { name: 'Message Preview', value: preview, inline: false },
+    )
+    .setTimestamp()
+    .setFooter(brandFooter('Kick Live Announcement'));
+
+  await interaction.reply({ embeds: [statusEmbed] });
 }
 
 // ==================== EVENT HANDLERS ====================
@@ -1570,6 +1652,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'welcomemessage': await handleWelcomeMessagePreview(interaction); break;
       case 'snipe': await handleSnipe(interaction); break;
       case 'setkickchannel': await handleSetKickChannel(interaction); break;
+      case 'setkickmessage': await handleSetKickMessage(interaction); break;
       case 'removekickchannel': await handleRemoveKickChannel(interaction); break;
       case 'kickstatus': await handleKickStatus(interaction); break;
       default:
