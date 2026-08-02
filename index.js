@@ -35,24 +35,27 @@ const KICK_CLIENT_ID = process.env.KICK_CLIENT_ID;
 const KICK_CLIENT_SECRET = process.env.KICK_CLIENT_SECRET;
 
 // ==================== UI THEME ====================
-// Professional palette: deep slate/navy base, muted gold accent, restrained status colors.
+// Palette pulled from the "Full Moon" client theme reference: Discord-native status
+// colors (green/yellow/red/purple) plus a signature gold accent for highlights.
 const THEME = {
-  success: 0x2f9e6e,   // muted emerald
-  error: 0xb5453f,     // muted brick red
-  warning: 0xc9972e,   // muted amber
-  info: 0x3b6ea5,      // steel blue
-  primary: 0x2c3e50,   // deep slate navy
-  danger: 0xb5453f,
-  mute: 0xc9972e,
+  success: 0x43b581,   // theme --green
+  error: 0xf04747,     // theme --red
+  warning: 0xfaa61a,   // theme --yellow
+  info: 0x3b6ea5,      // steel blue (kept — theme has no dedicated "info" color)
+  primary: 0x2c3e50,   // deep slate navy — base/neutral embed color
+  danger: 0xf04747,
+  mute: 0xfaa61a,
   level: 0x546e8a,     // slate blue-gray
-  kick: 0x53fc18,      // kept as Kick's own brand green for recognizability
-  accent: 0xc9a961,    // muted gold — used sparingly for dashboards/highlights
+  kick: 0x53fc18,      // Kick's own brand green — kept for recognizability
+  streaming: 0x593695, // theme --purple — Discord's native "streaming" status color
+  accent: 0xffe066,    // theme's signature gold — selected-channel / mention highlight color
 };
-const BRAND_NAME = 'Z++ Security';
+const BRAND_NAME = 'Full Moon';
 const FOOTER_ICON = 'https://cdn.discordapp.com/emojis/879640511815659570.gif';
 const brandFooter = (text) => ({ text: `${BRAND_NAME}  •  ${text}`, iconURL: FOOTER_ICON });
 const brandAuthor = () => ({ name: `${BRAND_NAME}`, iconURL: client.user?.displayAvatarURL() || FOOTER_ICON });
 const DIVIDER = '─────────────────────────';
+const GOLD_ACCENT = '✦'; // theme's gold highlight, used as a small bullet on key fields
 
 // Small status-badge helper for consistent on/off/live indicators across embeds.
 function statusBadge(isActive, onLabel = 'Enabled', offLabel = 'Disabled') {
@@ -594,7 +597,7 @@ function buildHelpEmbed(pageKey, guild) {
       .map((k) => `${HELP_CATEGORIES[k].label} — **${HELP_CATEGORIES[k].commands.length}** Commands`)
       .join('\n\n');
     embed
-      .setTitle('Z++ Security — Command Directory')
+      .setTitle('Full Moon — Command Directory')
       .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category. For a live snapshot of your current settings, run \`/dashboard\`.`)
       .addFields({ name: '📊 Categories', value: summaryLines, inline: false })
       .setThumbnail(guild?.iconURL({ size: 256 }) || null);
@@ -659,8 +662,30 @@ const DASHBOARD_SECTIONS = {
   welcome: { label: 'Welcome & Roles', emoji: '👋' },
   leveling: { label: 'Leveling', emoji: '📈' },
   kick: { label: 'Kick Live', emoji: '📺' },
+  system: { label: 'System', emoji: '⚙️' },
 };
-const DASHBOARD_ORDER = ['overview', 'security', 'logging', 'welcome', 'leveling', 'kick'];
+const DASHBOARD_ORDER = ['overview', 'security', 'logging', 'welcome', 'leveling', 'kick', 'system'];
+
+/** Formats a millisecond duration as a compact "1d 4h 32m" style string. */
+function formatUptime(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  return parts.join(' ');
+}
+
+/** Classifies latency into a plain-language responsiveness tier. */
+function responsivenessTier(latencyMs) {
+  if (latencyMs < 100) return { label: 'Excellent', badge: '🟢' };
+  if (latencyMs < 200) return { label: 'Good', badge: '🟢' };
+  if (latencyMs < 500) return { label: 'Fair', badge: '🟡' };
+  return { label: 'Degraded', badge: '🔴' };
+}
 
 function buildDashboardEmbed(sectionKey, guild) {
   const guildId = guild.id;
@@ -677,6 +702,8 @@ function buildDashboardEmbed(sectionKey, guild) {
     const levelOn = levelSystemEnabled[guildId] !== false;
     const kickOn = !!kickAnnouncements[guildId];
     const logCount = Object.keys(logChannels[guildId] || {}).length;
+    const latency = client.ws.ping;
+    const tier = responsivenessTier(latency);
 
     embed
       .setTitle('🗂️  Server Dashboard')
@@ -688,7 +715,7 @@ function buildDashboardEmbed(sectionKey, guild) {
         { name: '👋 Welcome', value: statusBadge(welcomeOn), inline: true },
         { name: '📈 Leveling', value: statusBadge(levelOn), inline: true },
         { name: '📺 Kick Live', value: statusBadge(kickOn, 'Tracking', 'Not set'), inline: true },
-        { name: '\u200b', value: '\u200b', inline: true },
+        { name: `${GOLD_ACCENT} Responsiveness`, value: `${tier.badge} ${latency}ms (${tier.label})`, inline: true },
       );
     return embed;
   }
@@ -768,18 +795,42 @@ function buildDashboardEmbed(sectionKey, guild) {
     const preview = renderKickMessage(template, { kickUsername: config.kickUsername, channelData: { slug: config.kickUsername }, roleId: config.roleId });
     embed
       .setTitle('📺  Kick Live')
-      .setColor(config.isLive ? THEME.kick : THEME.info)
+      .setColor(config.isLive ? THEME.streaming : THEME.info)
       .setDescription(DIVIDER)
       .addFields(
         { name: 'Streamer', value: `[${config.kickUsername}](https://kick.com/${config.kickUsername})`, inline: true },
         { name: 'Channel', value: `<#${config.channelId}>`, inline: true },
-        { name: 'Currently Live', value: config.isLive ? '🟢 Yes' : '⚪ No', inline: true },
+        { name: 'Currently Live', value: config.isLive ? '🟣 Yes — Streaming' : '⚪ No', inline: true },
         { name: 'Ping Role', value: config.roleId ? `<@&${config.roleId}>` : '*None*', inline: true },
         { name: 'Custom Message', value: config.messageTemplate ? '🟢 Set' : '⚪ Default', inline: true },
         { name: '\u200b', value: '\u200b', inline: true },
-        { name: 'Message Preview', value: preview, inline: false },
+        { name: `${GOLD_ACCENT} Message Preview`, value: preview, inline: false },
         { name: 'Manage', value: '`/setkickchannel`  ·  `/setkickmessage`  ·  `/removekickchannel`', inline: false },
       );
+    return embed;
+  }
+
+  if (sectionKey === 'system') {
+    const latency = client.ws.ping;
+    const tier = responsivenessTier(latency);
+    const uptime = formatUptime(client.uptime || 0);
+    const totalGuilds = client.guilds.cache.size;
+    const totalMembers = client.guilds.cache.reduce((sum, g) => sum + (g.memberCount || 0), 0);
+    const memoryMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+
+    embed
+      .setTitle('⚙️  System & Responsiveness')
+      .setColor(tier.badge === '🔴' ? THEME.error : tier.badge === '🟡' ? THEME.warning : THEME.success)
+      .setDescription(DIVIDER)
+      .addFields(
+        { name: 'Response Time', value: `${tier.badge} ${latency}ms — **${tier.label}**`, inline: true },
+        { name: 'Uptime', value: `🟢 ${uptime}`, inline: true },
+        { name: '\u200b', value: '\u200b', inline: true },
+        { name: 'Servers', value: `${totalGuilds}`, inline: true },
+        { name: 'Members Reached', value: `${totalMembers.toLocaleString()}`, inline: true },
+        { name: 'Memory Usage', value: `${memoryMb} MB`, inline: true },
+      )
+      .setFooter(brandFooter('Live system snapshot'));
     return embed;
   }
 
@@ -1031,7 +1082,7 @@ async function handleKick(interaction) {
         .setAuthor(brandAuthor())
         .setTitle('👢 Kick Successful')
         .setDescription(`**${targetUser.tag}** has been removed from the server.`)
-        .addFields({ name: 'Reason', value: `\`${reason}\``, inline: false })
+        .addFields({ name: `${GOLD_ACCENT} Reason`, value: `\`${reason}\``, inline: false })
         .setColor(THEME.success).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
       components: [],
     });
@@ -1085,7 +1136,7 @@ async function handleBan(interaction) {
         .setAuthor(brandAuthor())
         .setTitle('🔨 Ban Successful')
         .setDescription(`**${targetUser.tag}** has been **permanently banned**.`)
-        .addFields({ name: 'Reason', value: `\`${reason}\``, inline: false })
+        .addFields({ name: `${GOLD_ACCENT} Reason`, value: `\`${reason}\``, inline: false })
         .setColor(THEME.danger).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
       components: [],
     });
@@ -1139,7 +1190,7 @@ async function handleMute(interaction) {
         .setDescription(`**${targetUser.tag}** has been muted.`)
         .addFields(
           { name: '⏱️ Duration', value: `\`${minutes} minutes\``, inline: true },
-          { name: '📝 Reason', value: `\`${reason}\``, inline: false },
+          { name: `${GOLD_ACCENT} Reason`, value: `\`${reason}\``, inline: false },
         )
         .setColor(THEME.mute).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
     });
@@ -1204,7 +1255,7 @@ async function handleWarn(interaction) {
   await interaction.reply({
     embeds: [warningEmbed('Warning Issued', `${targetUser} has been warned.`)
       .addFields(
-        { name: 'Reason', value: reason, inline: false },
+        { name: `${GOLD_ACCENT} Reason`, value: reason, inline: false },
         { name: 'Total Warnings', value: `${total}`, inline: true },
       )],
   });
@@ -1651,7 +1702,7 @@ async function handleSetWelcomeMessage(interaction) {
   welcomeMessages[interaction.guildId] = message;
   const preview = renderWelcomeMessage(message, interaction.member);
   await interaction.reply({
-    embeds: [successEmbed('Welcome Message Updated', 'New members will now see:').addFields({ name: '📝 Preview', value: preview })],
+    embeds: [successEmbed('Welcome Message Updated', 'New members will now see:').addFields({ name: `${GOLD_ACCENT} Preview`, value: preview })],
   });
 }
 
@@ -1761,16 +1812,16 @@ async function handleKickStatus(interaction) {
   const statusEmbed = new EmbedBuilder()
     .setAuthor(brandAuthor())
     .setTitle('📺 Kick Announcement Config')
-    .setColor(config.isLive ? THEME.kick : THEME.info)
+    .setColor(config.isLive ? THEME.streaming : THEME.info)
     .setDescription(DIVIDER)
     .addFields(
       { name: 'Streamer', value: `[${config.kickUsername}](https://kick.com/${config.kickUsername})`, inline: true },
       { name: 'Channel', value: `<#${config.channelId}>`, inline: true },
       { name: 'Ping Role', value: config.roleId ? `<@&${config.roleId}>` : 'None', inline: true },
-      { name: 'Currently Live', value: config.isLive ? '🟢 Yes' : '⚫ No', inline: true },
-      { name: 'Custom Message', value: config.messageTemplate ? '✅ Set' : '➖ Using default', inline: true },
+      { name: 'Currently Live', value: config.isLive ? '🟣 Yes — Streaming' : '⚪ No', inline: true },
+      { name: 'Custom Message', value: config.messageTemplate ? '🟢 Set' : '⚪ Using default', inline: true },
       { name: '\u200b', value: '\u200b', inline: true },
-      { name: 'Message Preview', value: preview, inline: false },
+      { name: `${GOLD_ACCENT} Message Preview`, value: preview, inline: false },
     )
     .setTimestamp()
     .setFooter(brandFooter('Kick Live Announcement'));
