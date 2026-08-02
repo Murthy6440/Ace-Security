@@ -35,22 +35,29 @@ const KICK_CLIENT_ID = process.env.KICK_CLIENT_ID;
 const KICK_CLIENT_SECRET = process.env.KICK_CLIENT_SECRET;
 
 // ==================== UI THEME ====================
+// Professional palette: deep slate/navy base, muted gold accent, restrained status colors.
 const THEME = {
-  success: 0x2ecc71,
-  error: 0xe74c3c,
-  warning: 0xf1c40f,
-  info: 0x3498db,
-  primary: 0x7289da,
-  danger: 0xe74c3c,
-  mute: 0xf1c40f,
-  level: 0x7289da,
-  kick: 0x53fc18,
+  success: 0x2f9e6e,   // muted emerald
+  error: 0xb5453f,     // muted brick red
+  warning: 0xc9972e,   // muted amber
+  info: 0x3b6ea5,      // steel blue
+  primary: 0x2c3e50,   // deep slate navy
+  danger: 0xb5453f,
+  mute: 0xc9972e,
+  level: 0x546e8a,     // slate blue-gray
+  kick: 0x53fc18,      // kept as Kick's own brand green for recognizability
+  accent: 0xc9a961,    // muted gold — used sparingly for dashboards/highlights
 };
 const BRAND_NAME = 'Z++ Security';
 const FOOTER_ICON = 'https://cdn.discordapp.com/emojis/879640511815659570.gif';
-const brandFooter = (text) => ({ text: `${BRAND_NAME} • ${text}`, iconURL: FOOTER_ICON });
-const brandAuthor = () => ({ name: `${BRAND_NAME} 🛡️`, iconURL: client.user?.displayAvatarURL() || FOOTER_ICON });
-const DIVIDER = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
+const brandFooter = (text) => ({ text: `${BRAND_NAME}  •  ${text}`, iconURL: FOOTER_ICON });
+const brandAuthor = () => ({ name: `${BRAND_NAME}`, iconURL: client.user?.displayAvatarURL() || FOOTER_ICON });
+const DIVIDER = '─────────────────────────';
+
+// Small status-badge helper for consistent on/off/live indicators across embeds.
+function statusBadge(isActive, onLabel = 'Enabled', offLabel = 'Disabled') {
+  return isActive ? `🟢 ${onLabel}` : `⚪ ${offLabel}`;
+}
 
 // ==================== DATA STORAGE ====================
 const warnings = {};
@@ -128,7 +135,7 @@ function progressBar(current, total, size = 12) {
 }
 
 // ==================== KICK LIVE ANNOUNCEMENT HELPERS ====================
-const KICK_POLL_INTERVAL_MS = 30 * 1000; // checks every 30 seconds; 
+const KICK_POLL_INTERVAL_MS = 3 * 60 * 1000; // conservative — avoid hammering Kick's API
 let kickAppToken = null;
 let kickAppTokenExpiresAt = 0;
 
@@ -312,6 +319,7 @@ async function registerCommands() {
   const commands = [
     { name: 'ping', description: 'Check bot latency' },
     { name: 'help', description: 'Show all available commands' },
+    { name: 'dashboard', description: 'View all server configuration in one place' },
     {
       name: 'level',
       description: 'Show your (or someone else\'s) level and XP',
@@ -553,7 +561,7 @@ const HELP_CATEGORIES = {
   utility: {
     label: '⚙️ Utility',
     emoji: '⚙️',
-    commands: ['`/ping` — Latency check', '`/help` — This menu', '`/userinfo [user]`', '`/serverinfo`', '`/avatar [user]`', '`/setwelcomemessage <message>`'],
+    commands: ['`/ping` — Latency check', '`/help` — This menu', '`/dashboard` — Full server configuration overview', '`/userinfo [user]`', '`/serverinfo`', '`/avatar [user]`', '`/setwelcomemessage <message>`'],
   },
   community: {
     label: '🎮 Community',
@@ -586,8 +594,8 @@ function buildHelpEmbed(pageKey, guild) {
       .map((k) => `${HELP_CATEGORIES[k].label} — **${HELP_CATEGORIES[k].commands.length}** Commands`)
       .join('\n\n');
     embed
-      .setTitle('👑 Z++ Security Bot — Command Directory')
-      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category.`)
+      .setTitle('Z++ Security — Command Directory')
+      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category. For a live snapshot of your current settings, run \`/dashboard\`.`)
       .addFields({ name: '📊 Categories', value: summaryLines, inline: false })
       .setThumbnail(guild?.iconURL({ size: 256 }) || null);
   } else {
@@ -635,6 +643,185 @@ async function handleHelp(interaction) {
 
   collector.on('end', async () => {
     const disabledRow = buildHelpSelectRow(currentKey, interaction.user.id);
+    disabledRow.components[0].setDisabled(true);
+    await interaction.editReply({ components: [disabledRow] }).catch(() => {});
+  });
+}
+
+// ==================== DASHBOARD ====================
+// A single, professional overview of every configurable system — no need to run
+// five separate /status-style commands to see the full picture.
+
+const DASHBOARD_SECTIONS = {
+  overview: { label: 'Overview', emoji: '🗂️' },
+  security: { label: 'Security', emoji: '🛡️' },
+  logging: { label: 'Logging', emoji: '📋' },
+  welcome: { label: 'Welcome & Roles', emoji: '👋' },
+  leveling: { label: 'Leveling', emoji: '📈' },
+  kick: { label: 'Kick Live', emoji: '📺' },
+};
+const DASHBOARD_ORDER = ['overview', 'security', 'logging', 'welcome', 'leveling', 'kick'];
+
+function buildDashboardEmbed(sectionKey, guild) {
+  const guildId = guild.id;
+  const embed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setColor(THEME.primary)
+    .setTimestamp()
+    .setFooter(brandFooter('Server Dashboard'));
+
+  if (sectionKey === 'overview') {
+    const antiPingOn = !!antiPing[guildId];
+    const filterOn = (chatFilters[guildId]?.length || 0) > 0;
+    const welcomeOn = welcomeEnabled[guildId] !== false && !!welcomeChannels[guildId];
+    const levelOn = levelSystemEnabled[guildId] !== false;
+    const kickOn = !!kickAnnouncements[guildId];
+    const logCount = Object.keys(logChannels[guildId] || {}).length;
+
+    embed
+      .setTitle('🗂️  Server Dashboard')
+      .setDescription(`${DIVIDER}\n\nConfiguration summary for **${guild.name}**. Use the dropdown below to inspect a specific system.`)
+      .setThumbnail(guild.iconURL({ size: 256 }) || null)
+      .addFields(
+        { name: '🛡️ Security', value: `Anti-Ping: ${statusBadge(antiPingOn)}\n\nChat Filter: ${statusBadge(filterOn)}`, inline: true },
+        { name: '📋 Logging', value: logCount > 0 ? `🟢 ${logCount} channel(s) configured` : '⚪ Not configured', inline: true },
+        { name: '👋 Welcome', value: statusBadge(welcomeOn), inline: true },
+        { name: '📈 Leveling', value: statusBadge(levelOn), inline: true },
+        { name: '📺 Kick Live', value: statusBadge(kickOn, 'Tracking', 'Not set'), inline: true },
+        { name: '\u200b', value: '\u200b', inline: true },
+      );
+    return embed;
+  }
+
+  if (sectionKey === 'security') {
+    const antiPingOn = !!antiPing[guildId];
+    const filterWords = chatFilters[guildId]?.length || 0;
+    embed
+      .setTitle('🛡️  Security')
+      .setDescription(DIVIDER)
+      .addFields(
+        { name: 'Anti-Ping / Invite Filter', value: statusBadge(antiPingOn), inline: true },
+        { name: 'Chat Filter', value: filterWords > 0 ? `🟢 ${filterWords} word(s) blocked` : '⚪ No words filtered', inline: true },
+        { name: '\u200b', value: '\u200b', inline: true },
+        { name: 'Manage', value: '`/antiping on|off`\n\n`/filter add|remove|list|reset|clear`', inline: false },
+      );
+    return embed;
+  }
+
+  if (sectionKey === 'logging') {
+    const guildConfig = logChannels[guildId] || {};
+    const lines = Object.entries(LOG_ACTIONS).map(([key, meta]) => {
+      const channelId = guildConfig[key];
+      const value = channelId ? `<#${channelId}>` : (key === 'general' ? '*Not set*' : '*Falls back to general*');
+      return `**${meta.label}** — ${value}`;
+    });
+    embed
+      .setTitle('📋  Logging')
+      .setDescription(`${DIVIDER}\n\n${lines.join('\n\n')}`)
+      .addFields({ name: 'Manage', value: '`/setlog <channel> [action]`\n\n`/removelog <action>`', inline: false });
+    return embed;
+  }
+
+  if (sectionKey === 'welcome') {
+    const channelId = welcomeChannels[guildId];
+    const isEnabled = welcomeEnabled[guildId] !== false;
+    const autoRoleId = autoRoles[guildId];
+    const template = welcomeMessages[guildId] || DEFAULT_WELCOME_MESSAGE;
+    embed
+      .setTitle('👋  Welcome & Roles')
+      .setDescription(DIVIDER)
+      .addFields(
+        { name: 'Status', value: statusBadge(isEnabled), inline: true },
+        { name: 'Channel', value: channelId ? `<#${channelId}>` : '*Not set*', inline: true },
+        { name: 'Auto Role', value: autoRoleId ? `<@&${autoRoleId}>` : '*Not set*', inline: true },
+        { name: 'Message Template', value: `\`\`\`${template}\`\`\``, inline: false },
+        { name: 'Manage', value: '`/setwelcome <channel>` · `/setautorole <role>` · `/welcome on|off` · `/setwelcomemessage <text>`', inline: false },
+      );
+    return embed;
+  }
+
+  if (sectionKey === 'leveling') {
+    const isEnabled = levelSystemEnabled[guildId] !== false;
+    const trackedUsers = Object.keys(userLevels[guildId] || {}).length;
+    embed
+      .setTitle('📈  Leveling')
+      .setDescription(DIVIDER)
+      .addFields(
+        { name: 'Status', value: statusBadge(isEnabled), inline: true },
+        { name: 'Members Tracked', value: `${trackedUsers}`, inline: true },
+        { name: '\u200b', value: '\u200b', inline: true },
+        { name: 'Manage', value: '`/levelsystem on|off`\n\n`/leaderboard` to view standings', inline: false },
+      );
+    return embed;
+  }
+
+  if (sectionKey === 'kick') {
+    const config = kickAnnouncements[guildId];
+    if (!config) {
+      embed
+        .setTitle('📺  Kick Live')
+        .setColor(THEME.info)
+        .setDescription(`${DIVIDER}\n\n⚪ Not configured yet.\n\nUse \`/setkickchannel\` to announce when a streamer goes live.`);
+      return embed;
+    }
+    const template = config.messageTemplate || DEFAULT_KICK_MESSAGE;
+    const preview = renderKickMessage(template, { kickUsername: config.kickUsername, channelData: { slug: config.kickUsername }, roleId: config.roleId });
+    embed
+      .setTitle('📺  Kick Live')
+      .setColor(config.isLive ? THEME.kick : THEME.info)
+      .setDescription(DIVIDER)
+      .addFields(
+        { name: 'Streamer', value: `[${config.kickUsername}](https://kick.com/${config.kickUsername})`, inline: true },
+        { name: 'Channel', value: `<#${config.channelId}>`, inline: true },
+        { name: 'Currently Live', value: config.isLive ? '🟢 Yes' : '⚪ No', inline: true },
+        { name: 'Ping Role', value: config.roleId ? `<@&${config.roleId}>` : '*None*', inline: true },
+        { name: 'Custom Message', value: config.messageTemplate ? '🟢 Set' : '⚪ Default', inline: true },
+        { name: '\u200b', value: '\u200b', inline: true },
+        { name: 'Message Preview', value: preview, inline: false },
+        { name: 'Manage', value: '`/setkickchannel`  ·  `/setkickmessage`  ·  `/removekickchannel`', inline: false },
+      );
+    return embed;
+  }
+
+  return embed.setTitle('Unknown Section');
+}
+
+function buildDashboardSelectRow(currentKey, userId) {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`dashboard_select_${userId}`)
+    .setPlaceholder('🗂️  Choose a system to inspect...')
+    .addOptions(DASHBOARD_ORDER.map((key) => {
+      const s = DASHBOARD_SECTIONS[key];
+      return new StringSelectMenuOptionBuilder()
+        .setLabel(s.label)
+        .setValue(key)
+        .setEmoji(s.emoji)
+        .setDefault(key === currentKey);
+    }));
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+async function handleDashboard(interaction) {
+  let currentKey = 'overview';
+  const message = await interaction.reply({
+    embeds: [buildDashboardEmbed(currentKey, interaction.guild)],
+    components: [buildDashboardSelectRow(currentKey, interaction.user.id)],
+    fetchReply: true,
+  });
+
+  const collector = message.createMessageComponentCollector({
+    componentType: ComponentType.StringSelect,
+    time: 180_000,
+    filter: (menu) => menu.user.id === interaction.user.id,
+  });
+
+  collector.on('collect', async (menu) => {
+    currentKey = menu.values[0];
+    await menu.update({ embeds: [buildDashboardEmbed(currentKey, interaction.guild)], components: [buildDashboardSelectRow(currentKey, interaction.user.id)] });
+  });
+
+  collector.on('end', async () => {
+    const disabledRow = buildDashboardSelectRow(currentKey, interaction.user.id);
     disabledRow.components[0].setDisabled(true);
     await interaction.editReply({ components: [disabledRow] }).catch(() => {});
   });
@@ -1622,6 +1809,7 @@ client.on('interactionCreate', async (interaction) => {
     switch (command) {
       case 'ping': await handlePing(interaction); break;
       case 'help': await handleHelp(interaction); break;
+      case 'dashboard': await handleDashboard(interaction); break;
       case 'level': await handleLevel(interaction); break;
       case 'rank': await handleLevel(interaction); break;
       case 'leaderboard': await handleLeaderboard(interaction); break;
