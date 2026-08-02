@@ -128,7 +128,7 @@ function progressBar(current, total, size = 12) {
 }
 
 // ==================== KICK LIVE ANNOUNCEMENT HELPERS ====================
-const KICK_POLL_INTERVAL_MS = 3 * 60 * 1000; // conservative — avoid hammering Kick's API
+const KICK_POLL_INTERVAL_MS = 30 * 1000; // checks every 30 seconds; 
 let kickAppToken = null;
 let kickAppTokenExpiresAt = 0;
 
