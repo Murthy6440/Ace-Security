@@ -15,6 +15,12 @@ const {
   ComponentType,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  ChatInputCommandInteraction,
+  ButtonInteraction,
+  StringSelectMenuInteraction,
+  TextChannel,
+  ThreadChannel,
+  NewsChannel,
 } = require('discord.js');
 
 // ==================== CONFIGURATION ====================
