@@ -67,7 +67,7 @@ const userLevels = {};
 const snipedMessages = {};
 const levelSystemEnabled = {};
 const kickAnnouncements = {}; // guildId -> { kickUsername, channelId, roleId, isLive, lastSessionId }
-const youtubeAnnouncements = {}; // guildId -> Array<{ handle, channelId, uploadsPlaylistId, discordChannelId, roleId, isLive, lastVideoId }>
+const youtubeAnnouncements = {}; // guildId -> Array<{ handle, channelId, uploadsPlaylistId, discordChannelId, roleId, isLive, lastLiveVideoId, lastSeenVideoId }>
 
 const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
 
@@ -216,6 +216,16 @@ async function pollKickStreams() {
 // ==================== YOUTUBE LIVE ANNOUNCEMENT HELPERS ====================
 const YOUTUBE_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes — quota-friendly at scale (see below)
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
+const YOUTUBE_SHORT_MAX_SECONDS = 60; // duration threshold used to distinguish Shorts from regular videos
+
+/** Parses an ISO 8601 duration (e.g. "PT1M30S", "PT45S") into total seconds. */
+function parseIso8601DurationToSeconds(iso) {
+  if (!iso) return 0;
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const [, h, m, s] = match;
+  return (parseInt(h || 0, 10) * 3600) + (parseInt(m || 0, 10) * 60) + parseInt(s || 0, 10);
+}
 
 /** Accepts a handle (@name), a full channel URL, or a raw UC... channel ID and resolves
  * it to { channelId, title, uploadsPlaylistId, thumbnail }. Costs 1 quota unit. */
@@ -257,24 +267,41 @@ async function getLatestUploadVideoId(uploadsPlaylistId) {
   return body.items?.[0]?.contentDetails?.videoId || null;
 }
 
-/** Batch-checks up to 50 video IDs for live status in a single call. Costs 1 quota unit
- * total regardless of how many IDs are passed — this is what keeps polling cheap. */
-async function fetchVideosLiveStatus(videoIds) {
+/** Batch-checks up to 50 video IDs for live status + duration in a single call. Costs 1
+ * quota unit total regardless of how many IDs are passed — this is what keeps polling cheap. */
+async function fetchVideosInfo(videoIds) {
   if (videoIds.length === 0) return {};
-  const url = `${YOUTUBE_API_BASE}/videos?part=snippet,liveStreamingDetails&id=${videoIds.map(encodeURIComponent).join(',')}&key=${YOUTUBE_API_KEY}`;
+  const url = `${YOUTUBE_API_BASE}/videos?part=snippet,liveStreamingDetails,contentDetails&id=${videoIds.map(encodeURIComponent).join(',')}&key=${YOUTUBE_API_KEY}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`YouTube API returned ${res.status}`);
   const body = await res.json();
   const map = {};
   for (const item of body.items || []) {
+    const durationSeconds = parseIso8601DurationToSeconds(item.contentDetails?.duration);
     map[item.id] = {
       isLive: item.snippet.liveBroadcastContent === 'live',
       title: item.snippet.title,
       thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url,
       viewers: item.liveStreamingDetails?.concurrentViewers,
+      durationSeconds,
+      isShort: durationSeconds > 0 && durationSeconds <= YOUTUBE_SHORT_MAX_SECONDS,
     };
   }
   return map;
+}
+
+function buildYoutubeUploadEmbed(config, videoId, info) {
+  const kind = info.isShort ? 'Short' : 'video';
+  const emoji = info.isShort ? '📱' : '🎬';
+  return new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setTitle(`${emoji} ${config.handle} just posted a new ${kind}!`)
+    .setURL(info.isShort ? `https://youtube.com/shorts/${videoId}` : `https://youtube.com/watch?v=${videoId}`)
+    .setDescription(`**${info.title}**`)
+    .setColor(THEME.youtube)
+    .setImage(info.thumbnail || null)
+    .setTimestamp()
+    .setFooter(brandFooter(`YouTube ${info.isShort ? 'Short' : 'Video'} Announcement`));
 }
 
 function buildYoutubeLiveEmbed(config, videoId, info) {
@@ -290,7 +317,8 @@ function buildYoutubeLiveEmbed(config, videoId, info) {
 }
 
 /** Polls every tracked YouTube channel across all guilds, batching the expensive
- * live-status check into as few calls as possible to conserve API quota. */
+ * live-status/duration check into as few calls as possible to conserve API quota.
+ * Detects two independent events: going live, and a new video/Short being published. */
 async function pollYoutubeChannels() {
   if (!YOUTUBE_API_KEY) return;
 
@@ -310,38 +338,57 @@ async function pollYoutubeChannels() {
 
   // Step 2: batch-check all collected video IDs in chunks of 50 (1 unit per chunk).
   const uniqueIds = Array.from(new Set(lookups.map(l => l.videoId)));
-  const statusMap = {};
+  const infoMap = {};
   for (let i = 0; i < uniqueIds.length; i += 50) {
     const chunk = uniqueIds.slice(i, i + 50);
     try {
-      Object.assign(statusMap, await fetchVideosLiveStatus(chunk));
+      Object.assign(infoMap, await fetchVideosInfo(chunk));
     } catch (error) {
-      console.error('YouTube batch live-status check error:', error.message);
+      console.error('YouTube batch info check error:', error.message);
     }
   }
 
-  // Step 3: announce anything newly live.
+  // Step 3: announce whichever event actually happened — live takes priority since a
+  // livestream also shows up as the latest "upload" and shouldn't double-announce.
   for (const { guildId, config, videoId } of lookups) {
-    const info = statusMap[videoId];
+    const info = infoMap[videoId];
     if (!info) continue;
 
-    if (info.isLive && (!config.isLive || config.lastVideoId !== videoId)) {
-      try {
-        const guild = await client.guilds.fetch(guildId).catch(() => null);
-        if (guild) {
-          const channel = await guild.channels.fetch(config.discordChannelId).catch(() => null);
-          if (channel?.isTextBased()) {
-            const content = config.roleId ? `<@&${config.roleId}>` : undefined;
-            await channel.send({ content, embeds: [buildYoutubeLiveEmbed(config, videoId, info)] }).catch(err => console.error('YouTube announce send error:', err));
+    if (info.isLive) {
+      if (config.lastLiveVideoId !== videoId) {
+        try {
+          const guild = await client.guilds.fetch(guildId).catch(() => null);
+          if (guild) {
+            const channel = await guild.channels.fetch(config.discordChannelId).catch(() => null);
+            if (channel?.isTextBased()) {
+              const content = config.roleId ? `<@&${config.roleId}>` : undefined;
+              await channel.send({ content, embeds: [buildYoutubeLiveEmbed(config, videoId, info)] }).catch(err => console.error('YouTube live announce send error:', err));
+            }
           }
+        } catch (error) {
+          console.error(`YouTube live announce error for ${config.handle}:`, error.message);
         }
-      } catch (error) {
-        console.error(`YouTube announce error for ${config.handle}:`, error.message);
+        config.lastLiveVideoId = videoId;
+        config.lastSeenVideoId = videoId; // don't also fire an "upload" announcement for this one
       }
       config.isLive = true;
-      config.lastVideoId = videoId;
-    } else if (!info.isLive) {
+    } else {
       config.isLive = false;
+      if (config.lastSeenVideoId !== videoId) {
+        try {
+          const guild = await client.guilds.fetch(guildId).catch(() => null);
+          if (guild) {
+            const channel = await guild.channels.fetch(config.discordChannelId).catch(() => null);
+            if (channel?.isTextBased()) {
+              const content = config.roleId ? `<@&${config.roleId}>` : undefined;
+              await channel.send({ content, embeds: [buildYoutubeUploadEmbed(config, videoId, info)] }).catch(err => console.error('YouTube upload announce send error:', err));
+            }
+          }
+        } catch (error) {
+          console.error(`YouTube upload announce error for ${config.handle}:`, error.message);
+        }
+        config.lastSeenVideoId = videoId;
+      }
     }
   }
 }
@@ -1691,6 +1738,15 @@ async function handleAddYoutubeChannel(interaction) {
     return interaction.editReply({ embeds: [warningEmbed('Already Tracked', `**${resolved.title}** is already being tracked in <#${existing.discordChannelId}>.`)] });
   }
 
+  // Record their current latest video as a baseline so the next poll doesn't treat
+  // pre-existing content as a "new" upload the moment tracking starts.
+  let baselineVideoId = null;
+  try {
+    baselineVideoId = await getLatestUploadVideoId(resolved.uploadsPlaylistId);
+  } catch (error) {
+    console.error('YouTube baseline fetch error:', error.message);
+  }
+
   youtubeAnnouncements[interaction.guildId].push({
     handle: handleKey,
     channelId: resolved.channelId,
@@ -1698,11 +1754,12 @@ async function handleAddYoutubeChannel(interaction) {
     discordChannelId: channel.id,
     roleId: role?.id || null,
     isLive: false,
-    lastVideoId: null,
+    lastLiveVideoId: null,
+    lastSeenVideoId: baselineVideoId,
   });
 
   await interaction.editReply({
-    embeds: [successEmbed('YouTube Channel Added', `🔴 I'll post in ${channel} whenever **${resolved.title}** goes live on YouTube.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 5 minutes.\n\nUse \`${handleKey}\` to reference this channel with \`/removeyoutubechannel\`.`)],
+    embeds: [successEmbed('YouTube Channel Added', `🔴 I'll post in ${channel} whenever **${resolved.title}** goes live, uploads a new video, or posts a Short.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 5 minutes.\n\nUse \`${handleKey}\` to reference this channel with \`/removeyoutubechannel\`.`)],
   });
 }
 
