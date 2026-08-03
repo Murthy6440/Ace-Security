@@ -57,6 +57,13 @@ const brandAuthor = () => ({ name: `${BRAND_NAME}`, iconURL: client.user?.displa
 const DIVIDER = '─────────────────────────';
 const GOLD_ACCENT = '✦'; // theme's gold highlight, used as a small bullet on key fields
 
+// Welcome banner image — shown as the big image on the welcome embed.
+// NOTE: this was originally a signed Discord CDN attachment link (with ?ex=&is=&hm= params),
+// which expire after ~24h. Those query params have been stripped since they're single-use;
+// if the image stops loading, re-upload the GIF to your bot (see /assets/welcome-banner.gif
+// fallback pattern) instead of relying on a Discord CDN link.
+const WELCOME_BANNER_URL = 'https://cdn.discordapp.com/attachments/1268947950361645137/1514952441811046543/standard_35.gif';
+
 // Small status-badge helper for consistent on/off/live indicators across embeds.
 function statusBadge(isActive, onLabel = 'Enabled', offLabel = 'Disabled') {
   return isActive ? `🟢 ${onLabel}` : `⚪ ${offLabel}`;
@@ -1928,6 +1935,7 @@ client.on('guildMemberAdd', async (member) => {
           .setDescription(renderWelcomeMessage(template, member))
           .setColor(THEME.success)
           .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+          .setImage(WELCOME_BANNER_URL)
           .addFields(
             { name: '📅 Account Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
             { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true },
