@@ -612,6 +612,7 @@ async function registerCommands() {
         { name: 'amount', description: 'Number of messages (1-100)', type: 4, required: true },
         { name: 'user', description: 'Delete messages from specific user', type: 6, required: false },
         { name: 'contains', description: 'Delete messages containing this text', type: 3, required: false },
+        { name: 'bots', description: 'Only delete messages sent by bots', type: 5, required: false },
       ],
     },
     { name: 'lock', description: 'Lock a channel (disable messages)' },
@@ -755,7 +756,7 @@ const HELP_CATEGORIES = {
   moderation: {
     label: '🛡️ Moderation',
     emoji: '🛡️',
-    commands: ['`/kick <member> [reason]`', '`/ban <member> [reason]`', '`/mute <member> [minutes] [reason]`', '`/unmute <member>`', '`/warn <user> <reason>`', '`/warnings <user>`', '`/clearwarnings <user>`', '`/clear <amount>`', '`/purge <amount> [user] [contains]`', '`/snipe` — View last deleted message'],
+    commands: ['`/kick <member> [reason]`', '`/ban <member> [reason]`', '`/mute <member> [minutes] [reason]`', '`/unmute <member>`', '`/warn <user> <reason>`', '`/warnings <user>`', '`/clearwarnings <user>`', '`/clear <amount>`', '`/purge <amount> [user] [contains] [bots]`', '`/snipe` — View last deleted message'],
   },
   security: {
     label: '🔐 Security',
@@ -1314,6 +1315,7 @@ async function handlePurge(interaction) {
   const amount = interaction.options.getInteger('amount');
   const filterUser = interaction.options.getUser('user');
   const filterText = interaction.options.getString('contains');
+  const botsOnly = interaction.options.getBoolean('bots');
   const moderator = interaction.member;
 
   if (!moderator.permissions.has(PermissionFlagsBits.ManageMessages)) {
@@ -1329,6 +1331,7 @@ async function handlePurge(interaction) {
     let toDelete = messages;
     if (filterUser) toDelete = toDelete.filter(m => m.author.id === filterUser.id);
     if (filterText) toDelete = toDelete.filter(m => m.content.toLowerCase().includes(filterText.toLowerCase()));
+    if (botsOnly) toDelete = toDelete.filter(m => m.author.bot);
 
     if (toDelete.size === 0) {
       return interaction.editReply({ embeds: [warningEmbed('No Messages Found', 'No messages matched the specified filters.', { guild: interaction.guild })] });
@@ -1346,6 +1349,7 @@ async function handlePurge(interaction) {
     let summary = `**Scanned:** ${amount}\n\n**Deleted:** ${deletedCount}`;
     if (filterUser) summary += `\n\n**By User:** ${filterUser.tag}`;
     if (filterText) summary += `\n\n**Contains:** \`${filterText}\``;
+    if (botsOnly) summary += `\n\n**Filter:** 🤖 Bots only`;
 
     await sendLog(interaction.guild, buildEmbed({
       title: '🧹 Messages Purged',
