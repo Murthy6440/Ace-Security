@@ -50,7 +50,7 @@ const THEME = {
 };
 const BRAND_NAME = 'Z++ Security';
 const FOOTER_ICON = 'https://cdn.discordapp.com/emojis/879640511815659570.gif';
-const brandFooter = (text) => ({ text: `${BRAND_NAME} • ${text}`, iconURL: FOOTER_ICON });
+const brandFooter = (text) => (text ? { text: `${BRAND_NAME} • ${text}`, iconURL: FOOTER_ICON } : { text: BRAND_NAME });
 const brandAuthor = () => ({ name: `${BRAND_NAME} 🛡️`, iconURL: client.user?.displayAvatarURL() || FOOTER_ICON });
 const DIVIDER = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
 
@@ -451,7 +451,7 @@ function buildEmbed({ title, description, color, guild, reason, thumbnail }) {
     // A specific thumbnail (e.g. a target user's avatar) takes priority when given.
     .setThumbnail(thumbnail || resolveBanner(guild))
     .setTimestamp()
-    .setFooter(brandFooter('Z++ Security'));
+    .setFooter(brandFooter());
   return embed;
 }
 
@@ -751,7 +751,7 @@ async function handlePing(interaction) {
 }
 
 const HELP_CATEGORIES = {
-  overview: { label: '📖 Overview', emoji: '📖' },
+  overview: { label: '🧭 Overview', emoji: '🧭' },
   moderation: {
     label: '🛡️ Moderation',
     emoji: '🛡️',
@@ -797,7 +797,7 @@ function buildHelpEmbed(pageKey, guild) {
   const cat = HELP_CATEGORIES[pageKey];
   return buildEmbed({
     title: cat.label.replace(/^\S+\s/, ''),
-    description: cat.commands.join('\n\n'),
+    description: cat.commands.map((c) => `▸ ${c}`).join('\n\n'),
     color: THEME.primary,
     guild,
   });
@@ -806,7 +806,7 @@ function buildHelpEmbed(pageKey, guild) {
 function buildHelpSelectRow(currentKey, userId) {
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`help_select_${userId}`)
-    .setPlaceholder('📂 Choose a category to view...')
+    .setPlaceholder('🧭 Choose a category to view...')
     .addOptions(HELP_PAGE_ORDER.map((key) => {
       const cat = HELP_CATEGORIES[key];
       return new StringSelectMenuOptionBuilder()
