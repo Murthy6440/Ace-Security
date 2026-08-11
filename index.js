@@ -737,7 +737,7 @@ async function registerCommands() {
 
 async function handlePing(interaction) {
   const latency = interaction.client.ws.ping;
-  const speedStatus = latency < 100 ? '⚡ Excellent' : latency < 200 ? '✅ Good' : latency < 500 ? '⚠️ Fair' : '🐌 Slow';
+  const speedStatus = latency < 100 ? '⚡ Excellent' : latency < 200 ? '✅ Good' : latency < 500 ? '⚠️ Fair' : '🔴 Slow';
   const color = latency < 100 ? THEME.success : latency < 200 ? THEME.info : latency < 500 ? THEME.warning : THEME.error;
 
   await interaction.reply({
@@ -773,8 +773,8 @@ const HELP_CATEGORIES = {
     commands: ['`/ping` — Latency check', '`/help` — This menu', '`/userinfo [user]`', '`/serverinfo`', '`/avatar [user]`', '`/setwelcomemessage <message>`'],
   },
   community: {
-    label: '🎮 Community',
-    emoji: '🎮',
+    label: '💬 Community',
+    emoji: '💬',
     commands: ['`/rank [user]` — Rank card', '`/level [user]` — XP & level card', '`/leaderboard` — Top 10 by XP', '`/levelsystem on|off` — Admin: enable/disable XP tracking', '`/welcomemessage` — Preview welcome text'],
   },
   streaming: {
@@ -788,7 +788,7 @@ const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utili
 function buildHelpEmbed(pageKey, guild) {
   if (pageKey === 'overview') {
     return buildEmbed({
-      title: 'Z++ Security Bot — Command Directory',
+      title: '🛡️ Command Directory',
       description: `Use the dropdown below to choose a category and view its commands.`,
       color: THEME.primary,
       guild,
@@ -1926,7 +1926,7 @@ client.on('guildMemberAdd', async (member) => {
       if (channel?.isTextBased()) {
         const template = welcomeMessages[guildId] || DEFAULT_WELCOME_MESSAGE;
         const welcomeEmbed = buildEmbed({
-          title: '👋 A Wild Member Appears!',
+          title: '👋 New Member Joined',
           description: `${renderWelcomeMessage(template, member)}\n\n📅 **Account Created:** <t:${Math.floor(member.user.createdTimestamp / 1000)}:R>\n👥 **Member Count:** ${member.guild.memberCount}`,
           color: THEME.success,
           guild: member.guild,
