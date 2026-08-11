@@ -412,17 +412,59 @@ function canBotModerate(guild, target) {
   return me.roles.highest.position > target.roles.highest.position;
 }
 
-function successEmbed(title, description) {
-  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`✅ ${title}`).setDescription(description).setColor(THEME.success).setTimestamp().setFooter(brandFooter('Action Completed'));
+// ==================== UNIFIED RESPONSE FORMAT ====================
+// Every embed in the bot now follows the same layout:
+//   [ Server Banner ]
+//   Title (centered)
+//
+//   Body / content
+//   Reason: ... (only present when the command actually has a reason)
+const DEFAULT_BANNER_IMAGE = 'https://cdn.discordapp.com/emojis/879640511815659570.gif';
+
+/** Fakes centered-looking titles since Discord embeds don't support real text alignment. */
+function centerTitle(text) {
+  return `『 ${text} 』`;
 }
-function errorEmbed(title, description) {
-  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`❌ ${title}`).setDescription(description).setColor(THEME.error).setTimestamp().setFooter(brandFooter('Error'));
+
+/** Resolves the best available "server banner" for a guild: real banner > server icon > brand fallback. */
+function resolveBanner(guild) {
+  if (guild) {
+    const banner = guild.bannerURL?.({ size: 1024 });
+    if (banner) return banner;
+    const icon = guild.iconURL?.({ size: 1024 });
+    if (icon) return icon;
+  }
+  return DEFAULT_BANNER_IMAGE;
 }
-function infoEmbed(title, description) {
-  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`ℹ️ ${title}`).setDescription(description).setColor(THEME.info).setTimestamp().setFooter(brandFooter('Information'));
+
+/**
+ * Builds a standardized embed: banner image up top, centered title, a blank line, the
+ * body content, and — only if a reason string is actually passed in — a trailing Reason line.
+ */
+function buildEmbed({ title, description, color, guild, reason, thumbnail }) {
+  const embed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setTitle(centerTitle(title))
+    .setDescription(`\n${description || ''}${reason ? `\n\n📝 **Reason:** ${reason}` : ''}`)
+    .setColor(color)
+    .setImage(resolveBanner(guild))
+    .setTimestamp()
+    .setFooter(brandFooter('Z++ Security'));
+  if (thumbnail) embed.setThumbnail(thumbnail);
+  return embed;
 }
-function warningEmbed(title, description) {
-  return new EmbedBuilder().setAuthor(brandAuthor()).setTitle(`⚠️ ${title}`).setDescription(description).setColor(THEME.warning).setTimestamp().setFooter(brandFooter('Warning'));
+
+function successEmbed(title, description, opts = {}) {
+  return buildEmbed({ title: `✅ ${title}`, description, color: THEME.success, ...opts });
+}
+function errorEmbed(title, description, opts = {}) {
+  return buildEmbed({ title: `❌ ${title}`, description, color: THEME.error, ...opts });
+}
+function infoEmbed(title, description, opts = {}) {
+  return buildEmbed({ title: `ℹ️ ${title}`, description, color: THEME.info, ...opts });
+}
+function warningEmbed(title, description, opts = {}) {
+  return buildEmbed({ title: `⚠️ ${title}`, description, color: THEME.warning, ...opts });
 }
 
 async function safeInteractionReply(interaction, response) {
@@ -436,12 +478,12 @@ async function confirmAction(interaction, { title, description }) {
     new ButtonBuilder().setCustomId('confirm').setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('cancel').setLabel('Cancel').setEmoji('❌').setStyle(ButtonStyle.Secondary),
   );
-  const embed = new EmbedBuilder()
-    .setAuthor(brandAuthor())
-    .setTitle(`⚠️ ${title}`)
-    .setDescription(`${description}\n\n${DIVIDER}\n\n*This action cannot be undone.*`)
-    .setColor(THEME.warning)
-    .setTimestamp();
+  const embed = buildEmbed({
+    title: `⚠️ ${title}`,
+    description: `${description}\n\n${DIVIDER}\n\n*This action cannot be undone.*`,
+    color: THEME.warning,
+    guild: interaction.guild,
+  });
 
   const message = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
 
@@ -698,14 +740,12 @@ async function handlePing(interaction) {
   const color = latency < 100 ? THEME.success : latency < 200 ? THEME.info : latency < 500 ? THEME.warning : THEME.error;
 
   await interaction.reply({
-    embeds: [
-      new EmbedBuilder().setAuthor(brandAuthor())
-        .setTitle('🏓 Pong!')
-        .setDescription(`**Latency:** \`${latency}ms\`\n**Status:** ${speedStatus}`)
-        .setColor(color)
-        .setTimestamp()
-        .setFooter(brandFooter('Performance Check')),
-    ],
+    embeds: [buildEmbed({
+      title: '🏓 Pong!',
+      description: `**Latency:** \`${latency}ms\`\n**Status:** ${speedStatus}`,
+      color,
+      guild: interaction.guild,
+    })],
   });
 }
 
@@ -745,27 +785,24 @@ const HELP_CATEGORIES = {
 const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utility', 'community', 'streaming'];
 
 function buildHelpEmbed(pageKey, guild) {
-  const embed = new EmbedBuilder()
-    .setAuthor(brandAuthor())
-    .setColor(THEME.primary)
-    .setTimestamp()
-    .setFooter(brandFooter('Pick a category below • Need more help? Ask a server admin'));
-
   if (pageKey === 'overview') {
     const summaryLines = HELP_PAGE_ORDER.slice(1)
       .map((k) => `${HELP_CATEGORIES[k].label} — **${HELP_CATEGORIES[k].commands.length}** Commands`)
       .join('\n\n');
-    embed
-      .setTitle('👑 Z++ Security Bot — Command Directory')
-      .setDescription(`Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category.`)
-      .addFields({ name: '📊 Categories', value: summaryLines, inline: false });
-  } else {
-    const cat = HELP_CATEGORIES[pageKey];
-    embed
-      .setTitle(cat.label)
-      .setDescription(`${DIVIDER}\n\n${cat.commands.join('\n\n')}`);
+    return buildEmbed({
+      title: 'Z++ Security Bot — Command Directory',
+      description: `Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category.\n\n📊 **Categories**\n${summaryLines}`,
+      color: THEME.primary,
+      guild,
+    });
   }
-  return embed;
+  const cat = HELP_CATEGORIES[pageKey];
+  return buildEmbed({
+    title: cat.label.replace(/^\S+\s/, ''),
+    description: `${DIVIDER}\n\n${cat.commands.join('\n\n')}`,
+    color: THEME.primary,
+    guild,
+  });
 }
 
 function buildHelpSelectRow(currentKey, userId) {
@@ -812,21 +849,16 @@ async function handleHelp(interaction) {
 async function handleSnipe(interaction) {
   const sniped = snipedMessages[interaction.guildId]?.[interaction.channelId];
   if (!sniped) {
-    return interaction.reply({ embeds: [infoEmbed('👀 Nothing to Snipe', 'No recently deleted messages found in this channel.')], ephemeral: true });
+    return interaction.reply({ embeds: [infoEmbed('👀 Nothing to Snipe', 'No recently deleted messages found in this channel.', { guild: interaction.guild })], ephemeral: true });
   }
 
-  const snipeEmbed = new EmbedBuilder()
-    .setAuthor(brandAuthor())
-    .setTitle('👀 Sniped Message')
-    .setColor(THEME.warning)
-    .addFields(
-      { name: 'Author', value: sniped.authorTag, inline: true },
-      { name: 'Channel', value: `${interaction.channel}`, inline: true },
-    )
-    .setDescription(`${DIVIDER}\n\n${sniped.content || '*No text content*'}`)
-    .setThumbnail(sniped.authorAvatar)
-    .setTimestamp(sniped.timestamp)
-    .setFooter(brandFooter('Deleted Message'));
+  const snipeEmbed = buildEmbed({
+    title: '👀 Sniped Message',
+    description: `**Author:** ${sniped.authorTag}\n**Channel:** ${interaction.channel}\n\n${DIVIDER}\n\n${sniped.content || '*No text content*'}`,
+    color: THEME.warning,
+    guild: interaction.guild,
+    thumbnail: sniped.authorAvatar,
+  });
 
   await interaction.reply({ embeds: [snipeEmbed] });
 }
@@ -844,30 +876,25 @@ async function handleLevel(interaction) {
   const sorted = Object.entries(userLevels[guildId] || {}).sort((a, b) => b[1].xp - a[1].xp);
   const rank = sorted.findIndex(([id]) => id === targetUser.id) + 1;
 
-  const levelEmbed = new EmbedBuilder().setAuthor(brandAuthor())
-    .setTitle(`🏆 ${targetUser.username}'s Rank Card`)
-    .setColor(THEME.level)
-    .setThumbnail(targetUser.displayAvatarURL({ size: 256 }))
-    .addFields(
-      { name: 'Level', value: `**${level}**`, inline: true },
-      { name: 'Total XP', value: `**${data.xp}**`, inline: true },
-      { name: 'Server Rank', value: rank > 0 ? `**#${rank}**` : 'Unranked', inline: true },
-      { name: `Progress to Level ${level + 1}`, value: `\`${progressBar(xpIntoLevel, xpNeeded)}\`\n${xpIntoLevel} / ${xpNeeded} XP`, inline: false },
-    )
-    .setTimestamp()
-    .setFooter(brandFooter('Level System'));
+  const levelEmbed = buildEmbed({
+    title: `🏆 ${targetUser.username}'s Rank Card`,
+    description: `**Level:** ${level}\n**Total XP:** ${data.xp}\n**Server Rank:** ${rank > 0 ? `#${rank}` : 'Unranked'}\n\n**Progress to Level ${level + 1}**\n\`${progressBar(xpIntoLevel, xpNeeded)}\`\n${xpIntoLevel} / ${xpNeeded} XP`,
+    color: THEME.level,
+    guild: interaction.guild,
+    thumbnail: targetUser.displayAvatarURL({ size: 256 }),
+  });
 
   await interaction.reply({ embeds: [levelEmbed] });
 }
 
 async function handleLevelSystemToggle(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const state = interaction.options.getString('state');
   levelSystemEnabled[interaction.guildId] = state === 'on';
   await interaction.reply({
-    embeds: [successEmbed('Level System', `The XP/level system is now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}** in this server.${state === 'off' ? '\n\nMembers will stop earning XP and level-up announcements will stop. Existing XP/levels are kept, not wiped.' : ''}`)],
+    embeds: [successEmbed('Level System', `The XP/level system is now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}** in this server.${state === 'off' ? '\n\nMembers will stop earning XP and level-up announcements will stop. Existing XP/levels are kept, not wiped.' : ''}`, { guild: interaction.guild })],
   });
 }
 
@@ -876,7 +903,7 @@ async function handleLeaderboard(interaction) {
   const entries = Object.entries(userLevels[guildId] || {}).sort((a, b) => b[1].xp - a[1].xp).slice(0, 10);
 
   if (entries.length === 0) {
-    await interaction.reply({ embeds: [infoEmbed('📊 Leaderboard', 'Nobody has earned any XP yet — start chatting to appear here!')] });
+    await interaction.reply({ embeds: [infoEmbed('📊 Leaderboard', 'Nobody has earned any XP yet — start chatting to appear here!', { guild: interaction.guild })] });
     return;
   }
 
@@ -887,13 +914,13 @@ async function handleLeaderboard(interaction) {
     return `${rankIcon} <@${userId}> — Level **${level}** (${data.xp} XP)`;
   });
 
-  const leaderboardEmbed = new EmbedBuilder().setAuthor(brandAuthor())
-    .setTitle(`📊 ${interaction.guild.name} Leaderboard`)
-    .setColor(THEME.level)
-    .setDescription(lines.join('\n\n'))
-    .setThumbnail(interaction.guild.iconURL({ size: 256 }))
-    .setTimestamp()
-    .setFooter(brandFooter('Top 10 by XP'));
+  const leaderboardEmbed = buildEmbed({
+    title: `📊 ${interaction.guild.name} Leaderboard`,
+    description: lines.join('\n\n'),
+    color: THEME.level,
+    guild: interaction.guild,
+    thumbnail: interaction.guild.iconURL({ size: 256 }),
+  });
 
   await interaction.reply({ embeds: [leaderboardEmbed] });
 }
@@ -902,33 +929,27 @@ async function handleUserInfo(interaction) {
   const user = interaction.options.getUser('user') || interaction.user;
   const member = await interaction.guild.members.fetch(user.id).catch(() => null);
 
-  const userInfoEmbed = new EmbedBuilder().setAuthor(brandAuthor())
-    .setTitle(`👤 ${user.username}`)
-    .setColor(THEME.primary)
-    .setThumbnail(user.displayAvatarURL({ size: 256 }))
-    .addFields(
-      { name: 'ID', value: `\`${user.id}\``, inline: true },
-      { name: 'Type', value: user.bot ? '🤖 Bot' : '👥 User', inline: true },
-      { name: 'Account Created', value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true },
-    );
+  let body = `**ID:** \`${user.id}\`\n**Type:** ${user.bot ? '🤖 Bot' : '👥 User'}\n**Account Created:** <t:${Math.floor(user.createdTimestamp / 1000)}:R>`;
 
   if (member) {
     const statusEmoji = { online: '🟢', dnd: '🔴', idle: '🟡' }[member.presence?.status] || '⚫';
     const roleList = member.roles.cache.filter(r => r.id !== interaction.guild.id).map(r => r.toString()).join(', ') || 'No roles';
-    userInfoEmbed.addFields(
-      { name: 'Joined Server', value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`, inline: true },
-      { name: 'Status', value: `${statusEmoji} ${member.presence?.status || 'offline'}`, inline: true },
-      { name: `Roles (${member.roles.cache.size - 1})`, value: roleList, inline: false },
-    );
+    body += `\n**Joined Server:** <t:${Math.floor(member.joinedTimestamp / 1000)}:R>\n**Status:** ${statusEmoji} ${member.presence?.status || 'offline'}\n**Roles (${member.roles.cache.size - 1}):** ${roleList}`;
 
     const guildId = interaction.guildId;
     if (userLevels[guildId]?.[user.id]) {
       const data = userLevels[guildId][user.id];
-      userInfoEmbed.addFields({ name: 'Level', value: `Level ${getLevelFromXp(data.xp)} (${data.xp} XP)`, inline: true });
+      body += `\n**Level:** ${getLevelFromXp(data.xp)} (${data.xp} XP)`;
     }
   }
 
-  userInfoEmbed.setTimestamp().setFooter(brandFooter('User Information'));
+  const userInfoEmbed = buildEmbed({
+    title: `👤 ${user.username}`,
+    description: body,
+    color: THEME.primary,
+    guild: interaction.guild,
+    thumbnail: user.displayAvatarURL({ size: 256 }),
+  });
   await interaction.reply({ embeds: [userInfoEmbed] });
 }
 
@@ -936,30 +957,34 @@ async function handleServerInfo(interaction) {
   const guild = interaction.guild;
   const botCount = guild.members.cache.filter(m => m.user.bot).size;
 
-  const serverInfoEmbed = new EmbedBuilder().setAuthor(brandAuthor())
-    .setTitle(`🏢 ${guild.name}`)
-    .setColor(THEME.info)
-    .setThumbnail(guild.iconURL({ size: 256 }))
-    .addFields(
-      { name: '👑 Owner', value: `<@${guild.ownerId}>`, inline: true },
-      { name: '📅 Created', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
-      { name: 'ID', value: `\`${guild.id}\``, inline: true },
-      { name: '👥 Members', value: `${guild.memberCount}`, inline: true },
-      { name: '🤖 Bots', value: `${botCount}`, inline: true },
-      { name: '💬 Boost Tier', value: `Level ${guild.premiumTier} (${guild.premiumSubscriptionCount || 0} boosts)`, inline: true },
-      { name: '📊 Channels', value: `**Text:** ${guild.channels.cache.filter(c => c.isTextBased()).size}\n\n**Voice:** ${guild.channels.cache.filter(c => c.isVoiceBased()).size}`, inline: true },
-      { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true },
-    )
-    .setTimestamp()
-    .setFooter(brandFooter('Server Statistics'));
+  const body = [
+    `👑 **Owner:** <@${guild.ownerId}>`,
+    `📅 **Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:R>`,
+    `**ID:** \`${guild.id}\``,
+    `👥 **Members:** ${guild.memberCount}`,
+    `🤖 **Bots:** ${botCount}`,
+    `💬 **Boost Tier:** Level ${guild.premiumTier} (${guild.premiumSubscriptionCount || 0} boosts)`,
+    `📊 **Channels:** Text: ${guild.channels.cache.filter(c => c.isTextBased()).size} • Voice: ${guild.channels.cache.filter(c => c.isVoiceBased()).size}`,
+    `🎭 **Roles:** ${guild.roles.cache.size}`,
+  ].join('\n');
+
+  const serverInfoEmbed = buildEmbed({
+    title: `🏢 ${guild.name}`,
+    description: body,
+    color: THEME.info,
+    guild,
+    thumbnail: guild.iconURL({ size: 256 }),
+  });
 
   await interaction.reply({ embeds: [serverInfoEmbed] });
 }
 
 async function handleAvatar(interaction) {
   const user = interaction.options.getUser('user') || interaction.user;
-  const avatarEmbed = new EmbedBuilder().setAuthor(brandAuthor())
-    .setTitle(`🖼️ ${user.username}'s Avatar`)
+  const avatarEmbed = new EmbedBuilder()
+    .setAuthor(brandAuthor())
+    .setTitle(centerTitle(`🖼️ ${user.username}'s Avatar`))
+    .setDescription('\n')
     .setColor(THEME.primary)
     .setImage(user.displayAvatarURL({ size: 1024 }))
     .setTimestamp()
@@ -973,54 +998,56 @@ async function handleKick(interaction) {
   const moderator = interaction.member;
 
   if (!moderator.permissions.has(PermissionFlagsBits.KickMembers)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', '🔒 You need **Kick Members** permission to use this command.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', '🔒 You need **Kick Members** permission to use this command.', { guild: interaction.guild })], ephemeral: true });
   }
   const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
   if (!targetMember) {
-    return interaction.reply({ embeds: [errorEmbed('Member Not Found', '❓ The specified member could not be found.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Member Not Found', '❓ The specified member could not be found.', { guild: interaction.guild })], ephemeral: true });
   }
   if (!canModerate(moderator, targetMember)) {
-    return interaction.reply({ embeds: [errorEmbed('Cannot Kick', '⛔ You cannot kick this user due to role hierarchy or self-action.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Cannot Kick', '⛔ You cannot kick this user due to role hierarchy or self-action.', { guild: interaction.guild })], ephemeral: true });
   }
   if (!canBotModerate(interaction.guild, targetMember)) {
-    return interaction.reply({ embeds: [errorEmbed('Cannot Kick', "⛔ My role isn't high enough to kick this user. Move my role above theirs.")], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Cannot Kick', "⛔ My role isn't high enough to kick this user. Move my role above theirs.", { guild: interaction.guild })], ephemeral: true });
   }
 
   const confirmed = await confirmAction(interaction, {
     title: 'Confirm Kick',
-    description: `Kick **${targetUser.tag}** from the server?\n**Reason:** \`${reason}\``,
+    description: `Kick **${targetUser.tag}** from the server?`,
   });
   if (confirmed === null) {
-    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — kick cancelled.')], components: [] });
+    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — kick cancelled.', { guild: interaction.guild })], components: [] });
   }
   if (confirmed === false) {
-    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Kick for **${targetUser.tag}** was cancelled.`)], components: [] });
+    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Kick for **${targetUser.tag}** was cancelled.`, { guild: interaction.guild })], components: [] });
   }
 
   try {
     await targetMember.kick(reason);
-    await sendLog(interaction.guild, new EmbedBuilder()
-      .setAuthor(brandAuthor())
-      .setTitle('👢 Member Kicked').setColor(THEME.error).setThumbnail(targetUser.displayAvatarURL())
-      .addFields(
-        { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
-        { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
-        { name: '📝 Reason', value: `\`${reason}\``, inline: false },
-      ).setTimestamp().setFooter(brandFooter('Member Action')), 'kick');
+    await sendLog(interaction.guild, buildEmbed({
+      title: '👢 Member Kicked',
+      description: `**User:** ${targetUser.tag} (\`${targetUser.id}\`)\n**Moderator:** ${moderator.user.tag}`,
+      color: THEME.error,
+      guild: interaction.guild,
+      reason,
+      thumbnail: targetUser.displayAvatarURL(),
+    }), 'kick');
 
     await interaction.editReply({
-      embeds: [new EmbedBuilder()
-        .setAuthor(brandAuthor())
-        .setTitle('👢 Kick Successful')
-        .setDescription(`**${targetUser.tag}** has been removed from the server.`)
-        .addFields({ name: 'Reason', value: `\`${reason}\``, inline: false })
-        .setColor(THEME.success).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
+      embeds: [buildEmbed({
+        title: '👢 Kick Successful',
+        description: `**${targetUser.tag}** has been removed from the server.`,
+        color: THEME.success,
+        guild: interaction.guild,
+        reason,
+        thumbnail: targetUser.displayAvatarURL(),
+      })],
       components: [],
     });
   } catch (error) {
     console.error('Kick error:', error);
     const description = error.code === 50013 ? "⚠️ I don't have permission to kick this member." : '⚠️ Could not kick the member. Please try again.';
-    await interaction.editReply({ embeds: [errorEmbed('Kick Failed', description)], components: [] });
+    await interaction.editReply({ embeds: [errorEmbed('Kick Failed', description, { guild: interaction.guild })], components: [] });
   }
 }
 
@@ -1030,51 +1057,53 @@ async function handleBan(interaction) {
   const moderator = interaction.member;
 
   if (!moderator.permissions.has(PermissionFlagsBits.BanMembers)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', '🔒 You need **Ban Members** permission to use this command.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', '🔒 You need **Ban Members** permission to use this command.', { guild: interaction.guild })], ephemeral: true });
   }
   const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
   if (targetMember && !canModerate(moderator, targetMember)) {
-    return interaction.reply({ embeds: [errorEmbed('Cannot Ban', '⛔ You cannot ban this user due to role hierarchy or self-action.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Cannot Ban', '⛔ You cannot ban this user due to role hierarchy or self-action.', { guild: interaction.guild })], ephemeral: true });
   }
   if (targetMember && !canBotModerate(interaction.guild, targetMember)) {
-    return interaction.reply({ embeds: [errorEmbed('Cannot Ban', "⛔ My role isn't high enough to ban this user. Move my role above theirs.")], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Cannot Ban', "⛔ My role isn't high enough to ban this user. Move my role above theirs.", { guild: interaction.guild })], ephemeral: true });
   }
 
   const confirmed = await confirmAction(interaction, {
     title: 'Confirm Ban',
-    description: `Permanently ban **${targetUser.tag}** from the server?\n**Reason:** \`${reason}\``,
+    description: `Permanently ban **${targetUser.tag}** from the server?`,
   });
   if (confirmed === null) {
-    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — ban cancelled.')], components: [] });
+    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — ban cancelled.', { guild: interaction.guild })], components: [] });
   }
   if (confirmed === false) {
-    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Ban for **${targetUser.tag}** was cancelled.`)], components: [] });
+    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Ban for **${targetUser.tag}** was cancelled.`, { guild: interaction.guild })], components: [] });
   }
 
   try {
     await interaction.guild.bans.create(targetUser.id, { reason });
-    await sendLog(interaction.guild, new EmbedBuilder()
-      .setAuthor(brandAuthor())
-      .setTitle('🔨 Member Banned').setColor(THEME.danger).setThumbnail(targetUser.displayAvatarURL())
-      .addFields(
-        { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
-        { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
-        { name: '📝 Reason', value: `\`${reason}\``, inline: false },
-      ).setTimestamp().setFooter(brandFooter('Member Action')), 'ban');
+    await sendLog(interaction.guild, buildEmbed({
+      title: '🔨 Member Banned',
+      description: `**User:** ${targetUser.tag} (\`${targetUser.id}\`)\n**Moderator:** ${moderator.user.tag}`,
+      color: THEME.danger,
+      guild: interaction.guild,
+      reason,
+      thumbnail: targetUser.displayAvatarURL(),
+    }), 'ban');
 
     await interaction.editReply({
-      embeds: [new EmbedBuilder()
-        .setAuthor(brandAuthor())
-        .setTitle('🔨 Ban Successful')
-        .setDescription(`**${targetUser.tag}** has been **permanently banned**.`)
-        .addFields({ name: 'Reason', value: `\`${reason}\``, inline: false })
-        .setColor(THEME.danger).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
+      embeds: [buildEmbed({
+        title: '🔨 Ban Successful',
+        description: `**${targetUser.tag}** has been **permanently banned**.`,
+        color: THEME.danger,
+        guild: interaction.guild,
+        reason,
+        thumbnail: targetUser.displayAvatarURL(),
+      })],
       components: [],
     });
   } catch (error) {
     console.error('Ban error:', error);
     const description = error.code === 50013 ? "⚠️ I don't have permission to ban this member." : '⚠️ Could not ban the member. Please try again.';
-    await interaction.editReply({ embeds: [errorEmbed('Ban Failed', description)], components: [] });
+    await interaction.editReply({ embeds: [errorEmbed('Ban Failed', description, { guild: interaction.guild })], components: [] });
   }
 }
 
@@ -1085,50 +1114,50 @@ async function handleMute(interaction) {
   const moderator = interaction.member;
 
   if (!moderator.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', '🔒 You need **Moderate Members** permission to use this command.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', '🔒 You need **Moderate Members** permission to use this command.', { guild: interaction.guild })], ephemeral: true });
   }
   const MAX_MINUTES = 40320;
   if (minutesInput < 1) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Duration', 'Mute duration must be at least 1 minute.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Duration', 'Mute duration must be at least 1 minute.', { guild: interaction.guild })], ephemeral: true });
   }
   const minutes = Math.min(minutesInput, MAX_MINUTES);
 
   const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
   if (!targetMember) {
-    return interaction.reply({ embeds: [errorEmbed('Member Not Found', '❓ The specified member could not be found.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Member Not Found', '❓ The specified member could not be found.', { guild: interaction.guild })], ephemeral: true });
   }
   if (!canModerate(moderator, targetMember)) {
-    return interaction.reply({ embeds: [errorEmbed('Cannot Mute', '⛔ You cannot mute this user due to role hierarchy or self-action.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Cannot Mute', '⛔ You cannot mute this user due to role hierarchy or self-action.', { guild: interaction.guild })], ephemeral: true });
   }
   if (!canBotModerate(interaction.guild, targetMember)) {
-    return interaction.reply({ embeds: [errorEmbed('Cannot Mute', "⛔ My role isn't high enough to mute this user. Move my role above theirs.")], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Cannot Mute', "⛔ My role isn't high enough to mute this user. Move my role above theirs.", { guild: interaction.guild })], ephemeral: true });
   }
 
   try {
     await targetMember.timeout(minutes * 60 * 1000, reason);
-    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('🔇 Member Muted').setColor(THEME.mute).setThumbnail(targetUser.displayAvatarURL())
-      .addFields(
-        { name: '👤 User', value: `${targetUser.tag}\n\`${targetUser.id}\``, inline: false },
-        { name: '⏱️ Duration', value: `${minutes} minutes`, inline: true },
-        { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
-        { name: '📝 Reason', value: `\`${reason}\``, inline: false },
-      ).setTimestamp().setFooter(brandFooter('Member Action')), 'mute');
+    await sendLog(interaction.guild, buildEmbed({
+      title: '🔇 Member Muted',
+      description: `**User:** ${targetUser.tag} (\`${targetUser.id}\`)\n**Duration:** ${minutes} minutes\n**Moderator:** ${moderator.user.tag}`,
+      color: THEME.mute,
+      guild: interaction.guild,
+      reason,
+      thumbnail: targetUser.displayAvatarURL(),
+    }), 'mute');
 
     await interaction.reply({
-      embeds: [new EmbedBuilder().setAuthor(brandAuthor())
-        .setTitle('🔇 Mute Successful')
-        .setDescription(`**${targetUser.tag}** has been muted.`)
-        .addFields(
-          { name: '⏱️ Duration', value: `\`${minutes} minutes\``, inline: true },
-          { name: '📝 Reason', value: `\`${reason}\``, inline: false },
-        )
-        .setColor(THEME.mute).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Action Completed'))],
+      embeds: [buildEmbed({
+        title: '🔇 Mute Successful',
+        description: `**${targetUser.tag}** has been muted.\n**Duration:** \`${minutes} minutes\``,
+        color: THEME.mute,
+        guild: interaction.guild,
+        reason,
+        thumbnail: targetUser.displayAvatarURL(),
+      })],
     });
   } catch (error) {
     console.error('Mute error:', error);
     const description = error.code === 50013 ? "⚠️ I don't have permission to timeout this member." : '⚠️ Could not mute the member. Please try again.';
-    await interaction.reply({ embeds: [errorEmbed('Mute Failed', description)], ephemeral: true });
+    await interaction.reply({ embeds: [errorEmbed('Mute Failed', description, { guild: interaction.guild })], ephemeral: true });
   }
 }
 
@@ -1137,25 +1166,25 @@ async function handleUnmute(interaction) {
   const moderator = interaction.member;
 
   if (!moderator.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Moderate Members** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Moderate Members** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
   if (!targetMember) {
-    return interaction.reply({ embeds: [errorEmbed('Error', 'Member not found.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Error', 'Member not found.', { guild: interaction.guild })], ephemeral: true });
   }
 
   try {
     await targetMember.timeout(null);
-    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('🔊 Member Unmuted').setColor(THEME.success)
-      .addFields(
-        { name: 'Member', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
-        { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
-      ).setTimestamp(), 'mute');
-    await interaction.reply({ embeds: [successEmbed('Unmute Successful', `${targetUser.tag} has been unmuted.`)] });
+    await sendLog(interaction.guild, buildEmbed({
+      title: '🔊 Member Unmuted',
+      description: `**Member:** ${targetUser.tag} (${targetUser.id})\n**Moderator:** ${moderator.user.tag}`,
+      color: THEME.success,
+      guild: interaction.guild,
+    }), 'mute');
+    await interaction.reply({ embeds: [successEmbed('Unmute Successful', `${targetUser.tag} has been unmuted.`, { guild: interaction.guild })] });
   } catch (error) {
     console.error('Unmute error:', error);
-    await interaction.reply({ embeds: [errorEmbed('Error', 'Could not unmute member.')], ephemeral: true });
+    await interaction.reply({ embeds: [errorEmbed('Error', 'Could not unmute member.', { guild: interaction.guild })], ephemeral: true });
   }
 }
 
@@ -1166,7 +1195,7 @@ async function handleWarn(interaction) {
   const guildId = interaction.guildId;
 
   if (!moderator.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Moderate Members** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Moderate Members** permission.', { guild: interaction.guild })], ephemeral: true });
   }
 
   if (!warnings[guildId]) warnings[guildId] = {};
@@ -1174,21 +1203,16 @@ async function handleWarn(interaction) {
   warnings[guildId][targetUser.id].push({ mod: moderator.user.tag, reason, timestamp: Date.now() });
   const total = warnings[guildId][targetUser.id].length;
 
-  await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
-    .setTitle('⚠️ User Warned').setColor(THEME.warning)
-    .addFields(
-      { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
-      { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
-      { name: 'Reason', value: reason, inline: false },
-      { name: 'Total Warnings', value: `${total}`, inline: true },
-    ).setTimestamp(), 'warn');
+  await sendLog(interaction.guild, buildEmbed({
+    title: '⚠️ User Warned',
+    description: `**User:** ${targetUser.tag} (${targetUser.id})\n**Moderator:** ${moderator.user.tag}\n**Total Warnings:** ${total}`,
+    color: THEME.warning,
+    guild: interaction.guild,
+    reason,
+  }), 'warn');
 
   await interaction.reply({
-    embeds: [warningEmbed('Warning Issued', `${targetUser} has been warned.`)
-      .addFields(
-        { name: 'Reason', value: reason, inline: false },
-        { name: 'Total Warnings', value: `${total}`, inline: true },
-      )],
+    embeds: [warningEmbed('Warning Issued', `${targetUser} has been warned.\n**Total Warnings:** ${total}`, { guild: interaction.guild, reason })],
   });
 }
 
@@ -1199,10 +1223,13 @@ async function handleWarnings(interaction) {
 
   if (!userWarnings || userWarnings.length === 0) {
     return interaction.reply({
-      embeds: [new EmbedBuilder().setAuthor(brandAuthor())
-        .setTitle('📋 Clean Record')
-        .setDescription(`✅ **${targetUser.tag}** has no warnings.`)
-        .setColor(THEME.success).setThumbnail(targetUser.displayAvatarURL()).setTimestamp().setFooter(brandFooter('Clear Record'))],
+      embeds: [buildEmbed({
+        title: '📋 Clean Record',
+        description: `✅ **${targetUser.tag}** has no warnings.`,
+        color: THEME.success,
+        guild: interaction.guild,
+        thumbnail: targetUser.displayAvatarURL(),
+      })],
     });
   }
 
@@ -1212,11 +1239,13 @@ async function handleWarnings(interaction) {
   }).join('\n\n');
 
   await interaction.reply({
-    embeds: [new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle(`⚠️ Warnings — ${targetUser.tag}`)
-      .setColor(THEME.warning).setDescription(warningList).setThumbnail(targetUser.displayAvatarURL())
-      .addFields({ name: '📊 Summary', value: `**Total:** ${userWarnings.length}`, inline: false })
-      .setTimestamp().setFooter(brandFooter('Warning History'))],
+    embeds: [buildEmbed({
+      title: `⚠️ Warnings — ${targetUser.tag}`,
+      description: `${warningList}\n\n📊 **Summary — Total:** ${userWarnings.length}`,
+      color: THEME.warning,
+      guild: interaction.guild,
+      thumbnail: targetUser.displayAvatarURL(),
+    })],
   });
 }
 
@@ -1226,11 +1255,11 @@ async function handleClearWarnings(interaction) {
   const guildId = interaction.guildId;
 
   if (!moderator.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Moderate Members** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Moderate Members** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const userWarnings = warnings[guildId]?.[targetUser.id];
   if (!userWarnings || userWarnings.length === 0) {
-    return interaction.reply({ embeds: [infoEmbed('No Warnings', `${targetUser.tag} has no warnings to clear.`)], ephemeral: true });
+    return interaction.reply({ embeds: [infoEmbed('No Warnings', `${targetUser.tag} has no warnings to clear.`, { guild: interaction.guild })], ephemeral: true });
   }
 
   const count = userWarnings.length;
@@ -1239,23 +1268,21 @@ async function handleClearWarnings(interaction) {
     description: `Clear all **${count}** warning(s) for **${targetUser.tag}**?`,
   });
   if (confirmed === null) {
-    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — nothing was cleared.')], components: [] });
+    return interaction.editReply({ embeds: [infoEmbed('Timed Out', 'No response received — nothing was cleared.', { guild: interaction.guild })], components: [] });
   }
   if (confirmed === false) {
-    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Clear warnings for **${targetUser.tag}** was cancelled.`)], components: [] });
+    return interaction.editReply({ embeds: [infoEmbed('Cancelled', `Clear warnings for **${targetUser.tag}** was cancelled.`, { guild: interaction.guild })], components: [] });
   }
 
   warnings[guildId][targetUser.id] = [];
 
-  await sendLog(interaction.guild, new EmbedBuilder()
-    .setAuthor(brandAuthor())
-    .setTitle('🧹 Warnings Cleared').setColor(THEME.success)
-    .addFields(
-      { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: false },
-      { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
-      { name: 'Cleared', value: `${count}`, inline: true },
-    ).setTimestamp(), 'warn');
-  await interaction.editReply({ embeds: [successEmbed('Warnings Cleared', `All ${count} warnings for **${targetUser.tag}** have been cleared.`)], components: [] });
+  await sendLog(interaction.guild, buildEmbed({
+    title: '🧹 Warnings Cleared',
+    description: `**User:** ${targetUser.tag} (${targetUser.id})\n**Moderator:** ${moderator.user.tag}\n**Cleared:** ${count}`,
+    color: THEME.success,
+    guild: interaction.guild,
+  }), 'warn');
+  await interaction.editReply({ embeds: [successEmbed('Warnings Cleared', `All ${count} warnings for **${targetUser.tag}** have been cleared.`, { guild: interaction.guild })], components: [] });
 }
 
 async function handleClear(interaction) {
@@ -1263,26 +1290,25 @@ async function handleClear(interaction) {
   const moderator = interaction.member;
 
   if (!moderator.permissions.has(PermissionFlagsBits.ManageMessages)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Messages** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Messages** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   if (amount < 1 || amount > 100) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Amount', 'Please specify between 1 and 100 messages.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Amount', 'Please specify between 1 and 100 messages.', { guild: interaction.guild })], ephemeral: true });
   }
 
   await interaction.deferReply();
   try {
     const deleted = await interaction.channel.bulkDelete(amount, true);
-    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('🧹 Messages Cleared').setColor(THEME.info)
-      .addFields(
-        { name: 'Channel', value: `${interaction.channel}`, inline: true },
-        { name: 'Moderator', value: `${moderator.user.tag}`, inline: true },
-        { name: 'Deleted', value: `${deleted.size}`, inline: true },
-      ).setTimestamp(), 'purge');
-    await interaction.editReply({ embeds: [successEmbed('Messages Deleted', `🧹 ${deleted.size} message(s) deleted${deleted.size < amount ? ' (some were older than 14 days and skipped)' : ''}.`)] });
+    await sendLog(interaction.guild, buildEmbed({
+      title: '🧹 Messages Cleared',
+      description: `**Channel:** ${interaction.channel}\n**Moderator:** ${moderator.user.tag}\n**Deleted:** ${deleted.size}`,
+      color: THEME.info,
+      guild: interaction.guild,
+    }), 'purge');
+    await interaction.editReply({ embeds: [successEmbed('Messages Deleted', `🧹 ${deleted.size} message(s) deleted${deleted.size < amount ? ' (some were older than 14 days and skipped)' : ''}.`, { guild: interaction.guild })] });
   } catch (error) {
     console.error('Clear error:', error);
-    await interaction.editReply({ embeds: [errorEmbed('Error', 'Could not delete messages.')] });
+    await interaction.editReply({ embeds: [errorEmbed('Error', 'Could not delete messages.', { guild: interaction.guild })] });
   }
 }
 
@@ -1293,10 +1319,10 @@ async function handlePurge(interaction) {
   const moderator = interaction.member;
 
   if (!moderator.permissions.has(PermissionFlagsBits.ManageMessages)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Messages** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Messages** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   if (amount < 1 || amount > 100) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Amount', 'Please specify between 1-100 messages.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Amount', 'Please specify between 1-100 messages.', { guild: interaction.guild })], ephemeral: true });
   }
 
   await interaction.deferReply();
@@ -1307,7 +1333,7 @@ async function handlePurge(interaction) {
     if (filterText) toDelete = toDelete.filter(m => m.content.toLowerCase().includes(filterText.toLowerCase()));
 
     if (toDelete.size === 0) {
-      return interaction.editReply({ embeds: [warningEmbed('No Messages Found', 'No messages matched the specified filters.')] });
+      return interaction.editReply({ embeds: [warningEmbed('No Messages Found', 'No messages matched the specified filters.', { guild: interaction.guild })] });
     }
 
     let deletedCount = 0;
@@ -1323,101 +1349,107 @@ async function handlePurge(interaction) {
     if (filterUser) summary += `\n\n**By User:** ${filterUser.tag}`;
     if (filterText) summary += `\n\n**Contains:** \`${filterText}\``;
 
-    await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('🧹 Messages Purged').setColor(THEME.info).setDescription(summary)
-      .addFields(
-        { name: '👮 Moderator', value: `${moderator.user.tag}`, inline: true },
-        { name: '📍 Channel', value: `${interaction.channel}`, inline: true },
-      ).setTimestamp().setFooter(brandFooter('Purge Action')), 'purge');
+    await sendLog(interaction.guild, buildEmbed({
+      title: '🧹 Messages Purged',
+      description: `${summary}\n\n👮 **Moderator:** ${moderator.user.tag}\n📍 **Channel:** ${interaction.channel}`,
+      color: THEME.info,
+      guild: interaction.guild,
+    }), 'purge');
 
-    await interaction.editReply({ embeds: [successEmbed('Purge Successful', summary)] });
+    await interaction.editReply({ embeds: [successEmbed('Purge Successful', summary, { guild: interaction.guild })] });
   } catch (error) {
     console.error('Purge error:', error);
-    await interaction.editReply({ embeds: [errorEmbed('Purge Failed', 'Could not purge messages. Please try again.')] });
+    await interaction.editReply({ embeds: [errorEmbed('Purge Failed', 'Could not purge messages. Please try again.', { guild: interaction.guild })] });
   }
 }
 
 async function handleLock(interaction) {
   const moderator = interaction.member;
   if (!moderator.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   try {
     await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
-    await sendLog(interaction.guild, new EmbedBuilder()
-      .setAuthor(brandAuthor())
-      .setTitle('🔒 Channel Locked').setColor(THEME.error)
-      .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${moderator.user.tag}`, inline: true })
-      .setTimestamp(), 'lock');
+    await sendLog(interaction.guild, buildEmbed({
+      title: '🔒 Channel Locked',
+      description: `**Channel:** ${interaction.channel}\n**Moderator:** ${moderator.user.tag}`,
+      color: THEME.error,
+      guild: interaction.guild,
+    }), 'lock');
 
     const unlockRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('quick_unlock').setLabel('Unlock').setEmoji('🔓').setStyle(ButtonStyle.Success),
     );
-    const message = await interaction.reply({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.')], components: [unlockRow], fetchReply: true });
+    const message = await interaction.reply({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.', { guild: interaction.guild })], components: [unlockRow], fetchReply: true });
 
     message.awaitMessageComponent({ componentType: ComponentType.Button, filter: (b) => b.customId === 'quick_unlock', time: 60_000 })
       .then(async (btn) => {
         if (!btn.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-          return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
+          return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.', { guild: interaction.guild })], ephemeral: true });
         }
         await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null });
-        await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
-          .setTitle('🔓 Channel Unlocked').setColor(THEME.success)
-          .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${btn.user.tag}`, inline: true })
-          .setTimestamp(), 'lock');
-        await btn.update({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.')], components: [] });
+        await sendLog(interaction.guild, buildEmbed({
+          title: '🔓 Channel Unlocked',
+          description: `**Channel:** ${interaction.channel}\n**Moderator:** ${btn.user.tag}`,
+          color: THEME.success,
+          guild: interaction.guild,
+        }), 'lock');
+        await btn.update({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.', { guild: interaction.guild })], components: [] });
       })
       .catch(() => interaction.editReply({ components: [] }).catch(() => {}));
   } catch (error) {
     console.error('Lock error:', error);
-    await interaction.reply({ embeds: [errorEmbed('Error', 'Could not lock channel.')], ephemeral: true });
+    await interaction.reply({ embeds: [errorEmbed('Error', 'Could not lock channel.', { guild: interaction.guild })], ephemeral: true });
   }
 }
 
 async function handleUnlock(interaction) {
   const moderator = interaction.member;
   if (!moderator.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   try {
     await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null });
-    await sendLog(interaction.guild, new EmbedBuilder()
-      .setAuthor(brandAuthor())
-      .setTitle('🔓 Channel Unlocked').setColor(THEME.success)
-      .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${moderator.user.tag}`, inline: true })
-      .setTimestamp(), 'lock');
+    await sendLog(interaction.guild, buildEmbed({
+      title: '🔓 Channel Unlocked',
+      description: `**Channel:** ${interaction.channel}\n**Moderator:** ${moderator.user.tag}`,
+      color: THEME.success,
+      guild: interaction.guild,
+    }), 'lock');
 
     const lockRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('quick_lock').setLabel('Lock').setEmoji('🔒').setStyle(ButtonStyle.Danger),
     );
-    const message = await interaction.reply({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.')], components: [lockRow], fetchReply: true });
+    const message = await interaction.reply({ embeds: [successEmbed('Channel Unlocked', '🔓 Members can send messages again.', { guild: interaction.guild })], components: [lockRow], fetchReply: true });
 
     message.awaitMessageComponent({ componentType: ComponentType.Button, filter: (b) => b.customId === 'quick_lock', time: 60_000 })
       .then(async (btn) => {
         if (!btn.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-          return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.')], ephemeral: true });
+          return btn.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Manage Channels** permission.', { guild: interaction.guild })], ephemeral: true });
         }
         await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
-        await sendLog(interaction.guild, new EmbedBuilder().setAuthor(brandAuthor())
-          .setTitle('🔒 Channel Locked').setColor(THEME.error)
-          .addFields({ name: 'Channel', value: `${interaction.channel}`, inline: false }, { name: 'Moderator', value: `${btn.user.tag}`, inline: true })
-          .setTimestamp(), 'lock');
-        await btn.update({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.')], components: [] });
+        await sendLog(interaction.guild, buildEmbed({
+          title: '🔒 Channel Locked',
+          description: `**Channel:** ${interaction.channel}\n**Moderator:** ${btn.user.tag}`,
+          color: THEME.error,
+          guild: interaction.guild,
+        }), 'lock');
+        await btn.update({ embeds: [successEmbed('Channel Locked', '🔒 Members can no longer send messages here.', { guild: interaction.guild })], components: [] });
       })
       .catch(() => interaction.editReply({ components: [] }).catch(() => {}));
   } catch (error) {
     console.error('Unlock error:', error);
-    await interaction.reply({ embeds: [errorEmbed('Error', 'Could not unlock channel.')], ephemeral: true });
+    await interaction.reply({ embeds: [errorEmbed('Error', 'Could not unlock channel.', { guild: interaction.guild })], ephemeral: true });
   }
 }
 
 async function handleAntiPing(interaction) {
   const action = interaction.options.getString('action');
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   antiPing[interaction.guildId] = action === 'on';
-  await interaction.reply({ embeds: [successEmbed(`Anti-Ping ${action === 'on' ? 'Enabled' : 'Disabled'}`, action === 'on' ? '🛡️ Mass pings and mentions will now be automatically removed.' : 'Anti-ping protection is now off.')] });
+  await interaction.reply({ embeds: [successEmbed(`Anti-Ping ${action === 'on' ? 'Enabled' : 'Disabled'}`, action === 'on' ? '🛡️ Mass pings and mentions will now be automatically removed.' : 'Anti-ping protection is now off.', { guild: interaction.guild })] });
 }
 
 function parseWordList(input) {
@@ -1448,14 +1480,14 @@ async function handleFilter(interaction) {
   const action = interaction.options.getString('action');
   const word = interaction.options.getString('word');
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
 
   const guildId = interaction.guildId;
   if (!chatFilters[guildId]) chatFilters[guildId] = [];
 
   if (action === 'add') {
-    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter add [word or phrase]` — separate multiple with commas, e.g. `word1, word2, word3`')], ephemeral: true });
+    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter add [word or phrase]` — separate multiple with commas, e.g. `word1, word2, word3`', { guild: interaction.guild })], ephemeral: true });
     const requested = parseWordList(word);
     const added = [];
     const alreadyBlocked = [];
@@ -1469,19 +1501,18 @@ async function handleFilter(interaction) {
     }
 
     if (added.length === 0) {
-      return interaction.reply({ embeds: [warningEmbed('Already Blocked', requested.length === 1 ? `"${requested[0]}" is already filtered.` : `All ${requested.length} word(s) were already filtered.`)], ephemeral: true });
+      return interaction.reply({ embeds: [warningEmbed('Already Blocked', requested.length === 1 ? `"${requested[0]}" is already filtered.` : `All ${requested.length} word(s) were already filtered.`, { guild: interaction.guild })], ephemeral: true });
     }
 
-    const embed = successEmbed('Added to Filter', `🚫 Blocked **${added.length}** new word(s).\n\n**Total blocked:** ${chatFilters[guildId].length}`);
-    formatWordChunks(added).forEach((chunk, i) => embed.addFields({ name: i === 0 ? 'Added' : '\u200b', value: chunk, inline: false }));
+    let body = `🚫 Blocked **${added.length}** new word(s).\n\n**Total blocked:** ${chatFilters[guildId].length}\n\n**Added:**\n${formatWordChunks(added).join('\n')}`;
     if (alreadyBlocked.length > 0) {
-      embed.addFields({ name: `Skipped (already blocked) — ${alreadyBlocked.length}`, value: formatWordChunks(alreadyBlocked)[0] || 'None', inline: false });
+      body += `\n\n**Skipped (already blocked) — ${alreadyBlocked.length}:**\n${formatWordChunks(alreadyBlocked)[0] || 'None'}`;
     }
-    return interaction.reply({ embeds: [embed] });
+    return interaction.reply({ embeds: [successEmbed('Added to Filter', body, { guild: interaction.guild })] });
   }
 
   if (action === 'remove') {
-    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter remove [word or phrase]` — separate multiple with commas, e.g. `word1, word2, word3`')], ephemeral: true });
+    if (!word?.trim()) return interaction.reply({ embeds: [errorEmbed('No Word Provided', 'Usage: `/filter remove [word or phrase]` — separate multiple with commas, e.g. `word1, word2, word3`', { guild: interaction.guild })], ephemeral: true });
     const requested = parseWordList(word);
     const removed = [];
     const notFound = [];
@@ -1496,77 +1527,78 @@ async function handleFilter(interaction) {
     }
 
     if (removed.length === 0) {
-      return interaction.reply({ embeds: [errorEmbed('Not Found', requested.length === 1 ? `"${requested[0]}" isn't in the filter.` : `None of those ${requested.length} word(s) were in the filter.`)], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('Not Found', requested.length === 1 ? `"${requested[0]}" isn't in the filter.` : `None of those ${requested.length} word(s) were in the filter.`, { guild: interaction.guild })], ephemeral: true });
     }
 
-    const embed = successEmbed('Removed from Filter', `**${removed.length}** word(s) removed.\n\n**Total blocked:** ${chatFilters[guildId].length}`);
-    formatWordChunks(removed).forEach((chunk, i) => embed.addFields({ name: i === 0 ? 'Removed' : '\u200b', value: chunk, inline: false }));
+    let body = `**${removed.length}** word(s) removed.\n\n**Total blocked:** ${chatFilters[guildId].length}\n\n**Removed:**\n${formatWordChunks(removed).join('\n')}`;
     if (notFound.length > 0) {
-      embed.addFields({ name: `Skipped (not found) — ${notFound.length}`, value: formatWordChunks(notFound)[0] || 'None', inline: false });
+      body += `\n\n**Skipped (not found) — ${notFound.length}:**\n${formatWordChunks(notFound)[0] || 'None'}`;
     }
-    return interaction.reply({ embeds: [embed] });
+    return interaction.reply({ embeds: [successEmbed('Removed from Filter', body, { guild: interaction.guild })] });
   }
 
   if (action === 'list') {
     if (chatFilters[guildId].length === 0) {
-      return interaction.reply({ embeds: [infoEmbed('Filter List', 'No words are currently filtered. Try `/filter reset` to load a basic starter list.')] });
+      return interaction.reply({ embeds: [infoEmbed('Filter List', 'No words are currently filtered. Try `/filter reset` to load a basic starter list.', { guild: interaction.guild })] });
     }
-    const listEmbed = new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('🚫 Blocked Words').setColor(THEME.error)
-      .setFooter(brandFooter(`${chatFilters[guildId].length} word(s) blocked`)).setTimestamp();
-
     const CHUNK_SIZE = 20;
     const words = chatFilters[guildId];
+    const sections = [];
     for (let i = 0; i < words.length; i += CHUNK_SIZE) {
       const chunk = words.slice(i, i + CHUNK_SIZE);
-      listEmbed.addFields({ name: `Words ${i + 1}–${i + chunk.length}`, value: chunk.map(w => `\`${w}\``).join(', '), inline: false });
+      sections.push(`**Words ${i + 1}–${i + chunk.length}:**\n${chunk.map(w => `\`${w}\``).join(', ')}`);
     }
-    return interaction.reply({ embeds: [listEmbed] });
+    return interaction.reply({ embeds: [buildEmbed({
+      title: '🚫 Blocked Words',
+      description: sections.join('\n\n'),
+      color: THEME.error,
+      guild: interaction.guild,
+    })] });
   }
 
   if (action === 'reset') {
     const merged = Array.from(new Set([...chatFilters[guildId], ...DEFAULT_FILTER_WORDS]));
     chatFilters[guildId] = merged;
     return interaction.reply({
-      embeds: [successEmbed('Default Filter Loaded', `🚫 Loaded a basic starter wordlist (English, Hindi, and Hinglish profanity).\n\n**Total blocked:** ${merged.length}\n\nUse \`/filter list\` to review it, or \`/filter add\`/\`/filter remove\` to fine-tune it.`)],
+      embeds: [successEmbed('Default Filter Loaded', `🚫 Loaded a basic starter wordlist (English, Hindi, and Hinglish profanity).\n\n**Total blocked:** ${merged.length}\n\nUse \`/filter list\` to review it, or \`/filter add\`/\`/filter remove\` to fine-tune it.`, { guild: interaction.guild })],
     });
   }
 
   if (action === 'clear') {
     const count = chatFilters[guildId].length;
     chatFilters[guildId] = [];
-    return interaction.reply({ embeds: [successEmbed('Filter Cleared', `🗑️ Removed all ${count} blocked word(s). The chat filter is now off until you add words again.`)] });
+    return interaction.reply({ embeds: [successEmbed('Filter Cleared', `🗑️ Removed all ${count} blocked word(s). The chat filter is now off until you add words again.`, { guild: interaction.guild })] });
   }
 }
 
 async function handleSetLog(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const channel = interaction.options.getChannel('channel');
   const action = interaction.options.getString('action') || 'general';
   if (!channel.isTextBased()) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.', { guild: interaction.guild })], ephemeral: true });
   }
   if (!logChannels[interaction.guildId]) logChannels[interaction.guildId] = {};
   logChannels[interaction.guildId][action] = channel.id;
 
   const meta = LOG_ACTIONS[action] || LOG_ACTIONS.general;
-  await interaction.reply({ embeds: [successEmbed('Log Channel Set', `📋 **${meta.emoji} ${meta.label}** logs will now be sent to ${channel}.`)] });
+  await interaction.reply({ embeds: [successEmbed('Log Channel Set', `📋 **${meta.emoji} ${meta.label}** logs will now be sent to ${channel}.`, { guild: interaction.guild })] });
 }
 
 async function handleRemoveLog(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const action = interaction.options.getString('action');
   const guildConfig = logChannels[interaction.guildId];
   if (!guildConfig || !guildConfig[action]) {
-    return interaction.reply({ embeds: [infoEmbed('Nothing to Remove', `No specific log channel is set for **${LOG_ACTIONS[action]?.label || action}**. It's already falling back to general.`)], ephemeral: true });
+    return interaction.reply({ embeds: [infoEmbed('Nothing to Remove', `No specific log channel is set for **${LOG_ACTIONS[action]?.label || action}**. It's already falling back to general.`, { guild: interaction.guild })], ephemeral: true });
   }
   delete guildConfig[action];
   const meta = LOG_ACTIONS[action] || LOG_ACTIONS.general;
-  await interaction.reply({ embeds: [successEmbed('Log Channel Removed', `**${meta.emoji} ${meta.label}** logs will now fall back to the general log channel (if set).`)] });
+  await interaction.reply({ embeds: [successEmbed('Log Channel Removed', `**${meta.emoji} ${meta.label}** logs will now fall back to the general log channel (if set).`, { guild: interaction.guild })] });
 }
 
 async function handleLogs(interaction) {
@@ -1578,62 +1610,62 @@ async function handleLogs(interaction) {
   });
 
   await interaction.reply({
-    embeds: [infoEmbed('📋 Log Channel Configuration', lines.join('\n\n'))],
+    embeds: [infoEmbed('📋 Log Channel Configuration', lines.join('\n\n'), { guild: interaction.guild })],
   });
 }
 
 async function handleSetAutoRole(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const role = interaction.options.getRole('role');
   if (role.id === interaction.guild.id) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Role', 'You cannot use @everyone as the auto role.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Role', 'You cannot use @everyone as the auto role.', { guild: interaction.guild })], ephemeral: true });
   }
   if (role.managed) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Role', 'That role is managed by an integration and cannot be assigned manually.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Role', 'That role is managed by an integration and cannot be assigned manually.', { guild: interaction.guild })], ephemeral: true });
   }
   const me = interaction.guild.members.me;
   if (me && role.position >= me.roles.highest.position) {
-    return interaction.reply({ embeds: [errorEmbed('Role Too High', "That role sits above my highest role, so I can't assign it. Move my role above it first.")], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Role Too High', "That role sits above my highest role, so I can't assign it. Move my role above it first.", { guild: interaction.guild })], ephemeral: true });
   }
   autoRoles[interaction.guildId] = role.id;
-  await interaction.reply({ embeds: [successEmbed('Auto Role Set', `🎭 New members will automatically receive ${role}.`)] });
+  await interaction.reply({ embeds: [successEmbed('Auto Role Set', `🎭 New members will automatically receive ${role}.`, { guild: interaction.guild })] });
 }
 
 async function handleSetWelcome(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const channel = interaction.options.getChannel('channel');
   if (!channel.isTextBased()) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.', { guild: interaction.guild })], ephemeral: true });
   }
   welcomeChannels[interaction.guildId] = channel.id;
-  await interaction.reply({ embeds: [successEmbed('Welcome Channel Set', `👋 New members will be greeted in ${channel}.`)] });
+  await interaction.reply({ embeds: [successEmbed('Welcome Channel Set', `👋 New members will be greeted in ${channel}.`, { guild: interaction.guild })] });
 }
 
 async function handleWelcomeToggle(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const state = interaction.options.getString('state');
   welcomeEnabled[interaction.guildId] = state === 'on';
-  await interaction.reply({ embeds: [successEmbed('Welcome System', `Welcome messages are now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}**.`)] });
+  await interaction.reply({ embeds: [successEmbed('Welcome System', `Welcome messages are now **${state === 'on' ? 'ENABLED ✅' : 'DISABLED ❌'}**.`, { guild: interaction.guild })] });
 }
 
 async function handleSetWelcomeMessage(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const message = interaction.options.getString('message');
   if (message.length > 1000) {
-    return interaction.reply({ embeds: [errorEmbed('Message Too Long', 'Welcome messages must be 1000 characters or fewer.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Message Too Long', 'Welcome messages must be 1000 characters or fewer.', { guild: interaction.guild })], ephemeral: true });
   }
   welcomeMessages[interaction.guildId] = message;
   const preview = renderWelcomeMessage(message, interaction.member);
   await interaction.reply({
-    embeds: [successEmbed('Welcome Message Updated', 'New members will now see:').addFields({ name: '📝 Preview', value: preview })],
+    embeds: [successEmbed('Welcome Message Updated', `New members will now see:\n\n📝 **Preview:**\n${preview}`, { guild: interaction.guild })],
   });
 }
 
@@ -1644,10 +1676,7 @@ async function handleWelcomeMessagePreview(interaction) {
   const isEnabled = welcomeEnabled[interaction.guildId] !== false;
 
   await interaction.reply({
-    embeds: [infoEmbed('👋 Current Welcome Message', preview).addFields(
-      { name: 'Status', value: isEnabled ? '🟢 Enabled' : '🔴 Disabled', inline: true },
-      { name: 'Channel', value: channelId ? `<#${channelId}>` : 'Not set', inline: true },
-    )],
+    embeds: [infoEmbed('👋 Current Welcome Message', `${preview}\n\n**Status:** ${isEnabled ? '🟢 Enabled' : '🔴 Disabled'}\n**Channel:** ${channelId ? `<#${channelId}>` : 'Not set'}`, { guild: interaction.guild })],
   });
 }
 
@@ -1655,13 +1684,13 @@ async function handleWelcomeMessagePreview(interaction) {
 
 async function handleSetKickChannel(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const kickUsername = interaction.options.getString('kickuser').trim().toLowerCase();
   const channel = interaction.options.getChannel('channel');
   const role = interaction.options.getRole('role');
   if (!channel.isTextBased()) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.', { guild: interaction.guild })], ephemeral: true });
   }
 
   await interaction.deferReply();
@@ -1669,7 +1698,7 @@ async function handleSetKickChannel(interaction) {
     await fetchKickChannel(kickUsername); // validate the username actually exists before saving
   } catch (error) {
     console.error('Kick validation error:', error.message);
-    return interaction.editReply({ embeds: [errorEmbed('Kick User Not Found', `Could not find a Kick channel for \`${kickUsername}\`. Double-check the username from their URL (kick.com/**username**), and make sure \`KICK_CLIENT_ID\`/\`KICK_CLIENT_SECRET\` are set correctly.`)] });
+    return interaction.editReply({ embeds: [errorEmbed('Kick User Not Found', `Could not find a Kick channel for \`${kickUsername}\`. Double-check the username from their URL (kick.com/**username**), and make sure \`KICK_CLIENT_ID\`/\`KICK_CLIENT_SECRET\` are set correctly.`, { guild: interaction.guild })] });
     return;
   }
 
@@ -1682,28 +1711,28 @@ async function handleSetKickChannel(interaction) {
   };
 
   await interaction.editReply({
-    embeds: [successEmbed('Kick Announcements Set', `🟢 I'll post in ${channel} whenever **${kickUsername}** goes live on Kick.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 3 minutes.`)],
+    embeds: [successEmbed('Kick Announcements Set', `🟢 I'll post in ${channel} whenever **${kickUsername}** goes live on Kick.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 3 minutes.`, { guild: interaction.guild })],
   });
 }
 
 async function handleRemoveKickChannel(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   if (!kickAnnouncements[interaction.guildId]) {
-    return interaction.reply({ embeds: [infoEmbed('Nothing to Remove', 'No Kick announcement is configured for this server.')], ephemeral: true });
+    return interaction.reply({ embeds: [infoEmbed('Nothing to Remove', 'No Kick announcement is configured for this server.', { guild: interaction.guild })], ephemeral: true });
   }
   delete kickAnnouncements[interaction.guildId];
-  await interaction.reply({ embeds: [successEmbed('Kick Announcements Removed', 'Live announcements have been turned off.')] });
+  await interaction.reply({ embeds: [successEmbed('Kick Announcements Removed', 'Live announcements have been turned off.', { guild: interaction.guild })] });
 }
 
 async function handleKickStatus(interaction) {
   const config = kickAnnouncements[interaction.guildId];
   if (!config) {
-    return interaction.reply({ embeds: [infoEmbed('Kick Announcements', 'Not configured. Use `/setkickchannel` to set one up.')] });
+    return interaction.reply({ embeds: [infoEmbed('Kick Announcements', 'Not configured. Use `/setkickchannel` to set one up.', { guild: interaction.guild })] });
   }
   await interaction.reply({
-    embeds: [infoEmbed('Kick Announcements', `**Watching:** [${config.kickUsername}](https://kick.com/${config.kickUsername})\n**Channel:** <#${config.channelId}>\n**Ping Role:** ${config.roleId ? `<@&${config.roleId}>` : 'None'}\n**Currently Live:** ${config.isLive ? '🟢 Yes' : '⚫ No'}`)],
+    embeds: [infoEmbed('Kick Announcements', `**Watching:** [${config.kickUsername}](https://kick.com/${config.kickUsername})\n**Channel:** <#${config.channelId}>\n**Ping Role:** ${config.roleId ? `<@&${config.roleId}>` : 'None'}\n**Currently Live:** ${config.isLive ? '🟢 Yes' : '⚫ No'}`, { guild: interaction.guild })],
   });
 }
 
@@ -1711,13 +1740,13 @@ async function handleKickStatus(interaction) {
 
 async function handleAddYoutubeChannel(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const ytInput = interaction.options.getString('ytchannel').trim();
   const channel = interaction.options.getChannel('channel');
   const role = interaction.options.getRole('role');
   if (!channel.isTextBased()) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Channel', 'Please select a text channel.', { guild: interaction.guild })], ephemeral: true });
   }
 
   await interaction.deferReply();
@@ -1727,7 +1756,7 @@ async function handleAddYoutubeChannel(interaction) {
     resolved = await resolveYoutubeChannel(ytInput);
   } catch (error) {
     console.error('YouTube resolve error:', error.message);
-    return interaction.editReply({ embeds: [errorEmbed('YouTube Channel Not Found', `Could not find a YouTube channel for \`${ytInput}\`. Double-check the handle (e.g. \`@somechannel\`), and make sure \`YOUTUBE_API_KEY\` is set correctly.`)] });
+    return interaction.editReply({ embeds: [errorEmbed('YouTube Channel Not Found', `Could not find a YouTube channel for \`${ytInput}\`. Double-check the handle (e.g. \`@somechannel\`), and make sure \`YOUTUBE_API_KEY\` is set correctly.`, { guild: interaction.guild })] });
   }
 
   const handleKey = ytInput.startsWith('@') ? ytInput.toLowerCase() : `@${resolved.title.replace(/\s+/g, '').toLowerCase()}`;
@@ -1735,7 +1764,7 @@ async function handleAddYoutubeChannel(interaction) {
   if (!youtubeAnnouncements[interaction.guildId]) youtubeAnnouncements[interaction.guildId] = [];
   const existing = youtubeAnnouncements[interaction.guildId].find(c => c.channelId === resolved.channelId);
   if (existing) {
-    return interaction.editReply({ embeds: [warningEmbed('Already Tracked', `**${resolved.title}** is already being tracked in <#${existing.discordChannelId}>.`)] });
+    return interaction.editReply({ embeds: [warningEmbed('Already Tracked', `**${resolved.title}** is already being tracked in <#${existing.discordChannelId}>.`, { guild: interaction.guild })] });
   }
 
   // Record their current latest video as a baseline so the next poll doesn't treat
@@ -1759,36 +1788,36 @@ async function handleAddYoutubeChannel(interaction) {
   });
 
   await interaction.editReply({
-    embeds: [successEmbed('YouTube Channel Added', `🔴 I'll post in ${channel} whenever **${resolved.title}** goes live, uploads a new video, or posts a Short.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 5 minutes.\n\nUse \`${handleKey}\` to reference this channel with \`/removeyoutubechannel\`.`)],
+    embeds: [successEmbed('YouTube Channel Added', `🔴 I'll post in ${channel} whenever **${resolved.title}** goes live, uploads a new video, or posts a Short.${role ? `\n\n**Ping role:** ${role}` : ''}\n\nChecked roughly every 5 minutes.\n\nUse \`${handleKey}\` to reference this channel with \`/removeyoutubechannel\`.`, { guild: interaction.guild })],
   });
 }
 
 async function handleRemoveYoutubeChannel(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Permission Denied', 'You need **Administrator** permission.', { guild: interaction.guild })], ephemeral: true });
   }
   const ytInput = interaction.options.getString('ytchannel').trim().toLowerCase();
   const list = youtubeAnnouncements[interaction.guildId] || [];
   const index = list.findIndex(c => c.handle.toLowerCase() === ytInput || c.handle.toLowerCase() === `@${ytInput.replace(/^@/, '')}`);
 
   if (index === -1) {
-    return interaction.reply({ embeds: [errorEmbed('Not Found', `No tracked YouTube channel matches \`${ytInput}\`. Use \`/youtubelist\` to see what's tracked.`)], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Not Found', `No tracked YouTube channel matches \`${ytInput}\`. Use \`/youtubelist\` to see what's tracked.`, { guild: interaction.guild })], ephemeral: true });
   }
 
   const [removed] = list.splice(index, 1);
-  await interaction.reply({ embeds: [successEmbed('YouTube Channel Removed', `Stopped tracking **${removed.handle}**.`)] });
+  await interaction.reply({ embeds: [successEmbed('YouTube Channel Removed', `Stopped tracking **${removed.handle}**.`, { guild: interaction.guild })] });
 }
 
 async function handleYoutubeList(interaction) {
   const list = youtubeAnnouncements[interaction.guildId] || [];
   if (list.length === 0) {
-    return interaction.reply({ embeds: [infoEmbed('YouTube Announcements', 'No channels are currently tracked. Use `/addyoutubechannel` to add one.')] });
+    return interaction.reply({ embeds: [infoEmbed('YouTube Announcements', 'No channels are currently tracked. Use `/addyoutubechannel` to add one.', { guild: interaction.guild })] });
   }
 
   const lines = list.map(c => `${c.isLive ? '🟢' : '⚫'} **${c.handle}** — <#${c.discordChannelId}>${c.roleId ? ` — pings <@&${c.roleId}>` : ''}`);
 
   await interaction.reply({
-    embeds: [infoEmbed(`📺 Tracked YouTube Channels (${list.length})`, lines.join('\n\n'))],
+    embeds: [infoEmbed(`📺 Tracked YouTube Channels (${list.length})`, lines.join('\n\n'), { guild: interaction.guild })],
   });
 }
 
@@ -1898,27 +1927,24 @@ client.on('guildMemberAdd', async (member) => {
       const channel = await member.guild.channels.fetch(welcomeChannelId).catch(() => null);
       if (channel?.isTextBased()) {
         const template = welcomeMessages[guildId] || DEFAULT_WELCOME_MESSAGE;
-        const welcomeEmbed = new EmbedBuilder().setAuthor(brandAuthor())
-          .setTitle('👋 A Wild Member Appears!')
-          .setDescription(renderWelcomeMessage(template, member))
-          .setColor(THEME.success)
-          .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-          .addFields(
-            { name: '📅 Account Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
-            { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true },
-          )
-          .setTimestamp()
-          .setFooter(brandFooter('Welcome System'));
+        const welcomeEmbed = buildEmbed({
+          title: '👋 A Wild Member Appears!',
+          description: `${renderWelcomeMessage(template, member)}\n\n📅 **Account Created:** <t:${Math.floor(member.user.createdTimestamp / 1000)}:R>\n👥 **Member Count:** ${member.guild.memberCount}`,
+          color: THEME.success,
+          guild: member.guild,
+          thumbnail: member.user.displayAvatarURL({ size: 256 }),
+        });
         await channel.send({ embeds: [welcomeEmbed] }).catch(err => console.error('Welcome message error:', err));
       }
     }
 
-    await sendLog(member.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('📥 Member Joined').setColor(THEME.success).setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-      .addFields(
-        { name: 'Member', value: `${member.user.tag} (${member.user.id})`, inline: false },
-        { name: 'Account Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
-      ).setTimestamp(), 'member');
+    await sendLog(member.guild, buildEmbed({
+      title: '📥 Member Joined',
+      description: `**Member:** ${member.user.tag} (${member.user.id})\n**Account Created:** <t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`,
+      color: THEME.success,
+      guild: member.guild,
+      thumbnail: member.user.displayAvatarURL({ size: 256 }),
+    }), 'member');
   } catch (error) {
     console.error('Guild member add error:', error);
   }
@@ -1926,12 +1952,13 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('guildMemberRemove', async (member) => {
   try {
-    await sendLog(member.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('👋 Member Left').setColor(THEME.error).setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-      .addFields(
-        { name: 'Member', value: `${member.user.tag} (${member.user.id})`, inline: false },
-        { name: 'Joined Server', value: member.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>` : 'Unknown', inline: true },
-      ).setTimestamp(), 'member');
+    await sendLog(member.guild, buildEmbed({
+      title: '👋 Member Left',
+      description: `**Member:** ${member.user.tag} (${member.user.id})\n**Joined Server:** ${member.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>` : 'Unknown'}`,
+      color: THEME.error,
+      guild: member.guild,
+      thumbnail: member.user.displayAvatarURL({ size: 256 }),
+    }), 'member');
   } catch (error) {
     console.error('Guild member remove error:', error);
   }
@@ -1959,12 +1986,13 @@ client.on('messageCreate', async (message) => {
         const newLevel = getLevelFromXp(levelData.xp);
         if (newLevel > oldLevel) {
           message.channel.send({
-            embeds: [new EmbedBuilder().setAuthor(brandAuthor())
-              .setTitle('🎉 Level Up!')
-              .setDescription(`${message.author} just reached **Level ${newLevel}**!`)
-              .setColor(THEME.level)
-              .setThumbnail(message.author.displayAvatarURL({ size: 256 }))
-              .setFooter(brandFooter('Level System'))],
+            embeds: [buildEmbed({
+              title: '🎉 Level Up!',
+              description: `${message.author} just reached **Level ${newLevel}**!`,
+              color: THEME.level,
+              guild: message.guild,
+              thumbnail: message.author.displayAvatarURL({ size: 256 }),
+            })],
           }).catch(() => {});
         }
       }
@@ -1974,13 +2002,13 @@ client.on('messageCreate', async (message) => {
     if (antiPing[guildId] && hasMentions(message)) {
       try {
         await message.delete();
-        const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Mention Not Allowed', "You can't use @everyone, @here, or mention members/roles here.")] });
-        await sendLog(message.guild, new EmbedBuilder().setAuthor(brandAuthor())
-          .setTitle('🛡️ Anti-Ping Triggered').setColor(THEME.warning)
-          .addFields(
-            { name: 'User', value: `${message.author.tag} (${message.author.id})`, inline: false },
-            { name: 'Channel', value: `${message.channel}`, inline: true },
-          ).setTimestamp(), 'antiping');
+        const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Mention Not Allowed', "You can't use @everyone, @here, or mention members/roles here.", { guild: message.guild })] });
+        await sendLog(message.guild, buildEmbed({
+          title: '🛡️ Anti-Ping Triggered',
+          description: `**User:** ${message.author.tag} (${message.author.id})\n**Channel:** ${message.channel}`,
+          color: THEME.warning,
+          guild: message.guild,
+        }), 'antiping');
         setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
       } catch (error) {
         console.error('Anti-ping error:', error);
@@ -1995,7 +2023,7 @@ client.on('messageCreate', async (message) => {
       if (blocked) {
         try {
           await message.delete();
-          const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Message Removed', 'Your message contained a blocked word or phrase.')] });
+          const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Message Removed', 'Your message contained a blocked word or phrase.', { guild: message.guild })] });
           setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
         } catch (error) {
           console.error('Chat filter error:', error);
@@ -2008,14 +2036,13 @@ client.on('messageCreate', async (message) => {
     if (hasInvite(message.content)) {
       try {
         await message.delete();
-        const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Invite Deleted', 'Discord invites are not allowed in this server.')] });
-        await sendLog(message.guild, new EmbedBuilder().setAuthor(brandAuthor())
-          .setTitle('🔗 Invite Link Detected').setColor(THEME.warning)
-          .addFields(
-            { name: 'User', value: `${message.author.tag} (${message.author.id})`, inline: false },
-            { name: 'Channel', value: `${message.channel}`, inline: true },
-            { name: 'Content', value: message.content.substring(0, 100), inline: false },
-          ).setTimestamp(), 'antiping');
+        const warnMsg = await message.channel.send({ content: `${message.author}`, embeds: [warningEmbed('Invite Deleted', 'Discord invites are not allowed in this server.', { guild: message.guild })] });
+        await sendLog(message.guild, buildEmbed({
+          title: '🔗 Invite Link Detected',
+          description: `**User:** ${message.author.tag} (${message.author.id})\n**Channel:** ${message.channel}\n**Content:** ${message.content.substring(0, 100)}`,
+          color: THEME.warning,
+          guild: message.guild,
+        }), 'antiping');
         setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
       } catch (error) {
         console.error('Invite filter error:', error);
@@ -2038,13 +2065,12 @@ client.on('messageDelete', async (message) => {
       timestamp: Date.now(),
     };
 
-    await sendLog(message.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('🗑️ Message Deleted').setColor(THEME.warning)
-      .addFields(
-        { name: 'Author', value: `${message.author.tag} (${message.author.id})`, inline: false },
-        { name: 'Channel', value: `${message.channel}`, inline: true },
-        { name: 'Content', value: (message.content || '').substring(0, 100) || 'No content', inline: false },
-      ).setTimestamp(), 'message');
+    await sendLog(message.guild, buildEmbed({
+      title: '🗑️ Message Deleted',
+      description: `**Author:** ${message.author.tag} (${message.author.id})\n**Channel:** ${message.channel}\n**Content:** ${(message.content || '').substring(0, 100) || 'No content'}`,
+      color: THEME.warning,
+      guild: message.guild,
+    }), 'message');
   } catch (error) {
     console.error('Message delete error:', error);
   }
@@ -2055,14 +2081,12 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
     if (oldMessage.partial || newMessage.partial) return;
     if (!oldMessage.author || oldMessage.author.bot) return;
     if (oldMessage.content === newMessage.content) return;
-    await sendLog(oldMessage.guild, new EmbedBuilder().setAuthor(brandAuthor())
-      .setTitle('✏️ Message Edited').setColor(THEME.info)
-      .addFields(
-        { name: 'Author', value: `${oldMessage.author.tag} (${oldMessage.author.id})`, inline: false },
-        { name: 'Channel', value: `${oldMessage.channel}`, inline: true },
-        { name: 'Before', value: (oldMessage.content || '').substring(0, 100) || 'No content', inline: false },
-        { name: 'After', value: (newMessage.content || '').substring(0, 100) || 'No content', inline: false },
-      ).setTimestamp(), 'message');
+    await sendLog(oldMessage.guild, buildEmbed({
+      title: '✏️ Message Edited',
+      description: `**Author:** ${oldMessage.author.tag} (${oldMessage.author.id})\n**Channel:** ${oldMessage.channel}\n\n**Before:** ${(oldMessage.content || '').substring(0, 100) || 'No content'}\n**After:** ${(newMessage.content || '').substring(0, 100) || 'No content'}`,
+      color: THEME.info,
+      guild: oldMessage.guild,
+    }), 'message');
   } catch (error) {
     console.error('Message update error:', error);
   }
