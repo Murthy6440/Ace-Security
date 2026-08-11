@@ -429,9 +429,9 @@ function centerTitle(text) {
 /** Resolves the best available "server banner" for a guild: real banner > server icon > brand fallback. */
 function resolveBanner(guild) {
   if (guild) {
-    const banner = guild.bannerURL?.({ size: 1024 });
+    const banner = guild.bannerURL?.({ size: 256 });
     if (banner) return banner;
-    const icon = guild.iconURL?.({ size: 1024 });
+    const icon = guild.iconURL?.({ size: 256 });
     if (icon) return icon;
   }
   return DEFAULT_BANNER_IMAGE;
@@ -447,10 +447,11 @@ function buildEmbed({ title, description, color, guild, reason, thumbnail }) {
     .setTitle(centerTitle(title))
     .setDescription(`\n${description || ''}${reason ? `\n\n📝 **Reason:** ${reason}` : ''}`)
     .setColor(color)
-    .setImage(resolveBanner(guild))
+    // Small banner in the corner (setThumbnail) rather than a full-width setImage.
+    // A specific thumbnail (e.g. a target user's avatar) takes priority when given.
+    .setThumbnail(thumbnail || resolveBanner(guild))
     .setTimestamp()
     .setFooter(brandFooter('Z++ Security'));
-  if (thumbnail) embed.setThumbnail(thumbnail);
   return embed;
 }
 
