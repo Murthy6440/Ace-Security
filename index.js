@@ -787,12 +787,9 @@ const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utili
 
 function buildHelpEmbed(pageKey, guild) {
   if (pageKey === 'overview') {
-    const summaryLines = HELP_PAGE_ORDER.slice(1)
-      .map((k) => `${HELP_CATEGORIES[k].label} — **${HELP_CATEGORIES[k].commands.length}** Commands`)
-      .join('\n\n');
     return buildEmbed({
       title: 'Z++ Security Bot — Command Directory',
-      description: `Your complete moderation & community toolkit for **${guild ? guild.name : 'your server'}**.\n\n${DIVIDER}\n\nUse the dropdown below to jump straight to a category.\n\n📊 **Categories**\n${summaryLines}`,
+      description: `Use the dropdown below to choose a category and view its commands.`,
       color: THEME.primary,
       guild,
     });
@@ -800,7 +797,7 @@ function buildHelpEmbed(pageKey, guild) {
   const cat = HELP_CATEGORIES[pageKey];
   return buildEmbed({
     title: cat.label.replace(/^\S+\s/, ''),
-    description: `${DIVIDER}\n\n${cat.commands.join('\n\n')}`,
+    description: cat.commands.join('\n\n'),
     color: THEME.primary,
     guild,
   });
