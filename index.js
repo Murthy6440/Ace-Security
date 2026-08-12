@@ -429,9 +429,9 @@ function centerTitle(text) {
 /** Resolves the best available "server banner" for a guild: real banner > server icon > brand fallback. */
 function resolveBanner(guild) {
   if (guild) {
-    const banner = guild.bannerURL?.({ size: 256 });
+    const banner = guild.bannerURL?.({ size: 250 });
     if (banner) return banner;
-    const icon = guild.iconURL?.({ size: 256 });
+    const icon = guild.iconURL?.({ size: 250 });
     if (icon) return icon;
   }
   return DEFAULT_BANNER_IMAGE;
