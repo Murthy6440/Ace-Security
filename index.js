@@ -469,6 +469,22 @@ function warningEmbed(title, description, opts = {}) {
   return buildEmbed({ title: `⚠️ ${title}`, description, color: THEME.warning, ...opts });
 }
 
+/**
+ * Builds the "welcome-card style" embed used for moderation results and /help:
+ * a small author line (name + avatar) instead of the brand header, no big
+ * centered title, a full-width banner, and a compact custom footer line.
+ * Pair this with a bold header sent as the message `content` (outside the embed).
+ */
+function actionEmbed({ authorName, authorIcon, description, color, guild, footer }) {
+  const embed = new EmbedBuilder()
+    .setAuthor({ name: authorName, iconURL: authorIcon || undefined })
+    .setDescription(description || '\u200b')
+    .setColor(color)
+    .setImage(resolveBanner(guild));
+  if (footer) embed.setFooter({ text: footer });
+  return embed;
+}
+
 async function safeInteractionReply(interaction, response) {
   if (interaction.deferred) return interaction.editReply(response);
   if (interaction.replied) return interaction.followUp(response);
@@ -789,19 +805,23 @@ const HELP_PAGE_ORDER = ['overview', 'moderation', 'security', 'logging', 'utili
 
 function buildHelpEmbed(pageKey, guild) {
   if (pageKey === 'overview') {
-    return buildEmbed({
-      title: '🛡️ Command Directory',
-      description: `Use the dropdown below to choose a category and view its commands.`,
+    return actionEmbed({
+      authorName: guild?.name || 'Command Directory',
+      authorIcon: guild?.iconURL?.({ size: 256 }) || undefined,
+      description: `**🛡️ Command Directory**\n\nUse the dropdown below to choose a category and view its commands.`,
       color: THEME.primary,
       guild,
+      footer: 'Select a category from the dropdown to get started',
     });
   }
   const cat = HELP_CATEGORIES[pageKey];
-  return buildEmbed({
-    title: cat.label.replace(/^\S+\s/, ''),
-    description: cat.commands.map((c) => `▸ ${c}`).join('\n\n'),
+  return actionEmbed({
+    authorName: guild?.name || 'Command Directory',
+    authorIcon: guild?.iconURL?.({ size: 256 }) || undefined,
+    description: `**${cat.label}**\n\n${cat.commands.map((c) => `▸ ${c}`).join('\n\n')}`,
     color: THEME.primary,
     guild,
+    footer: `Category: ${cat.label.replace(/^\S+\s/, '')}`,
   });
 }
 
@@ -1034,13 +1054,14 @@ async function handleKick(interaction) {
     }), 'kick');
 
     await interaction.editReply({
-      embeds: [buildEmbed({
-        title: '👢 Kick Successful',
-        description: `**${targetUser.tag}** has been removed from the server.`,
+      content: `**👢 ${targetUser.tag} has been kicked**`,
+      embeds: [actionEmbed({
+        authorName: targetUser.tag,
+        authorIcon: targetUser.displayAvatarURL(),
+        description: `📝 **Reason:** ${reason}`,
         color: THEME.success,
         guild: interaction.guild,
-        reason,
-        thumbnail: targetUser.displayAvatarURL(),
+        footer: `Kicked by ${moderator.user.tag}`,
       })],
       components: [],
     });
@@ -1090,13 +1111,14 @@ async function handleBan(interaction) {
     }), 'ban');
 
     await interaction.editReply({
-      embeds: [buildEmbed({
-        title: '🔨 Ban Successful',
-        description: `**${targetUser.tag}** has been **permanently banned**.`,
+      content: `**🔨 ${targetUser.tag} has been permanently banned**`,
+      embeds: [actionEmbed({
+        authorName: targetUser.tag,
+        authorIcon: targetUser.displayAvatarURL(),
+        description: `📝 **Reason:** ${reason}`,
         color: THEME.danger,
         guild: interaction.guild,
-        reason,
-        thumbnail: targetUser.displayAvatarURL(),
+        footer: `Banned by ${moderator.user.tag}`,
       })],
       components: [],
     });
@@ -1145,13 +1167,14 @@ async function handleMute(interaction) {
     }), 'mute');
 
     await interaction.reply({
-      embeds: [buildEmbed({
-        title: '🔇 Mute Successful',
-        description: `**${targetUser.tag}** has been muted.\n**Duration:** \`${minutes} minutes\``,
+      content: `**🔇 ${targetUser.tag} has been muted**`,
+      embeds: [actionEmbed({
+        authorName: targetUser.tag,
+        authorIcon: targetUser.displayAvatarURL(),
+        description: `⏱️ **Duration:** ${minutes} minutes\n📝 **Reason:** ${reason}`,
         color: THEME.mute,
         guild: interaction.guild,
-        reason,
-        thumbnail: targetUser.displayAvatarURL(),
+        footer: `Muted by ${moderator.user.tag}`,
       })],
     });
   } catch (error) {
@@ -1181,7 +1204,17 @@ async function handleUnmute(interaction) {
       color: THEME.success,
       guild: interaction.guild,
     }), 'mute');
-    await interaction.reply({ embeds: [successEmbed('Unmute Successful', `${targetUser.tag} has been unmuted.`, { guild: interaction.guild })] });
+    await interaction.reply({
+      content: `**🔊 ${targetUser.tag} has been unmuted**`,
+      embeds: [actionEmbed({
+        authorName: targetUser.tag,
+        authorIcon: targetUser.displayAvatarURL(),
+        description: '\u200b',
+        color: THEME.success,
+        guild: interaction.guild,
+        footer: `Unmuted by ${moderator.user.tag}`,
+      })],
+    });
   } catch (error) {
     console.error('Unmute error:', error);
     await interaction.reply({ embeds: [errorEmbed('Error', 'Could not unmute member.', { guild: interaction.guild })], ephemeral: true });
@@ -1212,7 +1245,15 @@ async function handleWarn(interaction) {
   }), 'warn');
 
   await interaction.reply({
-    embeds: [warningEmbed('Warning Issued', `${targetUser} has been warned.\n**Total Warnings:** ${total}`, { guild: interaction.guild, reason })],
+    content: `**⚠️ ${targetUser.tag} has been warned**`,
+    embeds: [actionEmbed({
+      authorName: targetUser.tag,
+      authorIcon: targetUser.displayAvatarURL(),
+      description: `📝 **Reason:** ${reason}`,
+      color: THEME.warning,
+      guild: interaction.guild,
+      footer: `Warned by ${moderator.user.tag} • Total warnings: ${total}`,
+    })],
   });
 }
 
@@ -1223,12 +1264,13 @@ async function handleWarnings(interaction) {
 
   if (!userWarnings || userWarnings.length === 0) {
     return interaction.reply({
-      embeds: [buildEmbed({
-        title: '📋 Clean Record',
-        description: `✅ **${targetUser.tag}** has no warnings.`,
+      content: `**📋 ${targetUser.tag} has a clean record**`,
+      embeds: [actionEmbed({
+        authorName: targetUser.tag,
+        authorIcon: targetUser.displayAvatarURL(),
+        description: '✅ No warnings on file.',
         color: THEME.success,
         guild: interaction.guild,
-        thumbnail: targetUser.displayAvatarURL(),
       })],
     });
   }
@@ -1239,12 +1281,14 @@ async function handleWarnings(interaction) {
   }).join('\n\n');
 
   await interaction.reply({
-    embeds: [buildEmbed({
-      title: `⚠️ Warnings — ${targetUser.tag}`,
-      description: `${warningList}\n\n📊 **Summary — Total:** ${userWarnings.length}`,
+    content: `**⚠️ Warnings — ${targetUser.tag}**`,
+    embeds: [actionEmbed({
+      authorName: targetUser.tag,
+      authorIcon: targetUser.displayAvatarURL(),
+      description: warningList,
       color: THEME.warning,
       guild: interaction.guild,
-      thumbnail: targetUser.displayAvatarURL(),
+      footer: `Total warnings: ${userWarnings.length}`,
     })],
   });
 }
@@ -1282,7 +1326,18 @@ async function handleClearWarnings(interaction) {
     color: THEME.success,
     guild: interaction.guild,
   }), 'warn');
-  await interaction.editReply({ embeds: [successEmbed('Warnings Cleared', `All ${count} warnings for **${targetUser.tag}** have been cleared.`, { guild: interaction.guild })], components: [] });
+  await interaction.editReply({
+    content: `**🧹 Warnings cleared for ${targetUser.tag}**`,
+    embeds: [actionEmbed({
+      authorName: targetUser.tag,
+      authorIcon: targetUser.displayAvatarURL(),
+      description: `Removed **${count}** warning(s).`,
+      color: THEME.success,
+      guild: interaction.guild,
+      footer: `Cleared by ${moderator.user.tag}`,
+    })],
+    components: [],
+  });
 }
 
 async function handleClear(interaction) {
