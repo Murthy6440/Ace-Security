@@ -429,9 +429,9 @@ function centerTitle(text) {
 /** Resolves the best available "server banner" for a guild: real banner > server icon > brand fallback. */
 function resolveBanner(guild) {
   if (guild) {
-    const banner = guild.bannerURL?.({ size: 256 });
+    const banner = guild.bannerURL?.({ size: 512 });
     if (banner) return banner;
-    const icon = guild.iconURL?.({ size: 256 });
+    const icon = guild.iconURL?.({ size: 512 });
     if (icon) return icon;
   }
   return DEFAULT_BANNER_IMAGE;
@@ -447,11 +447,12 @@ function buildEmbed({ title, description, color, guild, reason, thumbnail }) {
     .setTitle(centerTitle(title))
     .setDescription(`\n${description || ''}${reason ? `\n\n📝 **Reason:** ${reason}` : ''}`)
     .setColor(color)
-    // Small banner in the corner (setThumbnail) rather than a full-width setImage.
-    // A specific thumbnail (e.g. a target user's avatar) takes priority when given.
-    .setThumbnail(thumbnail || resolveBanner(guild))
+    // Full-width banner (server pfp, or real banner if the server has one set) across the top.
+    .setImage(resolveBanner(guild))
     .setTimestamp()
     .setFooter(brandFooter());
+  // A specific thumbnail (e.g. a target user's avatar) still shows separately, small, in the corner.
+  if (thumbnail) embed.setThumbnail(thumbnail);
   return embed;
 }
 
