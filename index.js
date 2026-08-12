@@ -69,7 +69,7 @@ const levelSystemEnabled = {};
 const kickAnnouncements = {}; // guildId -> { kickUsername, channelId, roleId, isLive, lastSessionId }
 const youtubeAnnouncements = {}; // guildId -> Array<{ handle, channelId, uploadsPlaylistId, discordChannelId, roleId, isLive, lastLiveVideoId, lastSeenVideoId }>
 
-const DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {user}!\nWe're glad to have you here.";
+const DEFAULT_WELCOME_MESSAGE = "𝑯𝒀𝑬 {user} 𝑾𝑬𝑳𝑪𝑶𝑴𝑬 𝑻𝑶 𝐏𝐔𝐑𝐍𝐈𝐌𝐀 𝐆𝐀𝐌𝐈𝐍𝐆 <a:heart:1446197168519118848>\n\n**gg/purnimagaming**\n\n📌 *__READ SERVER RULE__* — #rules\n📌 *__CHAT ZONE__* — #chat";
 
 const DEFAULT_FILTER_WORDS = [
   'fuck', 'fucker', 'fucking', 'shit', 'bullshit', 'bitch', 'asshole', 'bastard',
@@ -1678,8 +1678,15 @@ async function handleWelcomeMessagePreview(interaction) {
   const channelId = welcomeChannels[interaction.guildId];
   const isEnabled = welcomeEnabled[interaction.guildId] !== false;
 
+  const previewEmbed = new EmbedBuilder()
+    .setAuthor({ name: interaction.user.username, iconURL: interaction.user.displayAvatarURL() })
+    .setDescription(preview)
+    .setColor(THEME.info)
+    .setImage(resolveBanner(interaction.guild))
+    .setFooter({ text: `Thanks for joining us! Now we have ${interaction.guild.memberCount} members` });
+
   await interaction.reply({
-    embeds: [infoEmbed('👋 Current Welcome Message', `${preview}\n\n**Status:** ${isEnabled ? '🟢 Enabled' : '🔴 Disabled'}\n**Channel:** ${channelId ? `<#${channelId}>` : 'Not set'}`, { guild: interaction.guild })],
+    embeds: [previewEmbed, infoEmbed('Welcome System Status', `**Status:** ${isEnabled ? '🟢 Enabled' : '🔴 Disabled'}\n**Channel:** ${channelId ? `<#${channelId}>` : 'Not set'}`, { guild: interaction.guild })],
   });
 }
 
@@ -1930,13 +1937,12 @@ client.on('guildMemberAdd', async (member) => {
       const channel = await member.guild.channels.fetch(welcomeChannelId).catch(() => null);
       if (channel?.isTextBased()) {
         const template = welcomeMessages[guildId] || DEFAULT_WELCOME_MESSAGE;
-        const welcomeEmbed = buildEmbed({
-          title: '👋 New Member Joined',
-          description: `${renderWelcomeMessage(template, member)}\n\n📅 **Account Created:** <t:${Math.floor(member.user.createdTimestamp / 1000)}:R>\n👥 **Member Count:** ${member.guild.memberCount}`,
-          color: THEME.success,
-          guild: member.guild,
-          thumbnail: member.user.displayAvatarURL({ size: 256 }),
-        });
+        const welcomeEmbed = new EmbedBuilder()
+          .setAuthor({ name: member.user.username, iconURL: member.user.displayAvatarURL() })
+          .setDescription(renderWelcomeMessage(template, member))
+          .setColor(THEME.success)
+          .setImage(resolveBanner(member.guild))
+          .setFooter({ text: `Thanks for joining us! Now we have ${member.guild.memberCount} members` });
         await channel.send({ embeds: [welcomeEmbed] }).catch(err => console.error('Welcome message error:', err));
       }
     }
