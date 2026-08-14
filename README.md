@@ -72,6 +72,4 @@ npm start
 - `/lock` / `/unlock` - Lock/unlock channel
 - And more...
 
-## License
 
-MIT
